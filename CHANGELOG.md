@@ -67,5 +67,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `formatApiError` / `toastApiError` error-handling helpers
 - React `ErrorBoundary` with retry for all major panels
 - Shimmer skeleton loading placeholders throughout
-- Vercel deployment configuration (`vercel.json` + `api/index.py` ASGI adapter)
+- Split deployment architecture — frontend served as static site via Vercel, backend containerised via Docker for Railway / Render / Fly.io
+- `Dockerfile` multi-stage build (builder + slim runtime) for backend
+- `.dockerignore` to exclude frontend assets, virtual environments, and build artefacts from the Docker build context
+- `vercel.json` configured for frontend-only static output with explicit `installCommand` to prevent Python runtime detection
+- `.vercelignore` to exclude `.venv`, `requirements.txt`, `api/`, `backend/`, `outputs/`, and other non-frontend paths from Vercel deployment
+- Vite `manualChunks` configuration to split the JS bundle into `charts` (recharts), `xlsx`, and `utils` chunks — reducing largest single chunk from 1.2 MB to 545 kB
 - `start.sh` convenience script to launch backend and frontend concurrently

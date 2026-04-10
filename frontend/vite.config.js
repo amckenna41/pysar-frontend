@@ -13,4 +13,17 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    // Split vendor bundles; recharts is inherently ~545 kB so raise the warning limit
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'charts': ['recharts'],
+          'xlsx': ['xlsx'],
+          'utils': ['axios', 'zustand', 'react-hot-toast', 'react-dropzone', 'canvas-confetti'],
+        },
+      },
+    },
+  },
 })
