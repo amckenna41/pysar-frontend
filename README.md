@@ -186,20 +186,51 @@ Concatenates the AAI-encoded feature vector with a descriptor feature vector for
 
 ## Deployment
 
-The repository is pre-configured for **Vercel** deployment — `vercel.json` and `api/index.py` (a thin ASGI adapter) are already included.
+The backend depends on `numpy`, `scipy`, `pandas`, `scikit-learn`, and `pySAR`. These scientific Python packages exceed Vercel's 250 MB serverless function limit and cannot run as a single serverless function. The recommended approach is a **split deployment**: static frontend on Vercel, containerised backend on a separate platform.
 
-### Deploy to Vercel
+### Frontend — Vercel
+
+`vercel.json` is pre-configured to build and serve only the static frontend:
 
 1. Fork or push this repository to GitHub.
 2. Import the project in the [Vercel dashboard](https://vercel.com/new).
-3. Vercel will auto-detect the configuration from `vercel.json`:
+3. Vercel will auto-detect `vercel.json`:
    - **Build command**: `cd frontend && npm install && npm run build`
    - **Output directory**: `frontend/dist`
-   - **Python runtime**: `@vercel/python@4.5.0` (60 s max duration)
-4. All `/api/*` requests are rewritten to `api/index.py`.
-5. Deploy — no further configuration required.
+4. Deploy. The frontend will be live at your Vercel URL.
+5. Set the `VITE_API_URL` environment variable in Vercel to point to your deployed backend (e.g. `https://your-api.railway.app`).
 
-> **Note:** Vercel Serverless Functions have a maximum execution time (60 s here). Long-running encoding jobs may time out on large datasets. For unrestricted run times, use the local setup described in [Running](#running).
+### Backend — Docker (Railway / Render / Fly.io)
+
+A `Dockerfile` is included at the repo root. Any platform that supports Docker containers will work. Railway is the simplest option:
+
+**Railway:**
+1. Create a new project in [Railway](https://railway.app) and connect your GitHub repo.
+2. Railway auto-detects the `Dockerfile` and builds it.
+3. Set the `PORT` environment variable to `8000` if not inferred automatically.
+4. Copy the public backend URL and set it as `VITE_API_URL` in your Vercel project settings.
+
+**Render:**
+1. Create a new **Web Service** in [Render](https://render.com), connect your repo.
+2. Set **Environment** → `Docker`, **Port** → `8000`.
+
+**Fly.io:**
+```bash
+fly launch --dockerfile Dockerfile --port 8000
+fly deploy
+```
+
+### Pointing the frontend at the backend
+
+In the Vercel project dashboard → **Settings → Environment Variables**, add:
+
+```
+VITE_API_URL=https://your-backend-url.railway.app
+```
+
+Then update [frontend/src/utils/api.js](frontend/src/utils/api.js) to use this variable as the base URL (it currently defaults to `http://localhost:8000` which works fine locally).
+
+> **Running everything locally?** Use `./start.sh` as described in [Running](#running) — no Docker or split deployment needed.
 
 ---
 

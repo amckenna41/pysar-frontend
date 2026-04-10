@@ -1,0 +1,43 @@
+# Frontend build output and dev dependencies
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Jupyter / outputs
+outputs/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# Docs and config only needed locally
+README.md
+CHANGELOG.md
+CONFIG.md
+images/
+start.sh
+
+# Vercel artefacts
+.vercel/
+api/
