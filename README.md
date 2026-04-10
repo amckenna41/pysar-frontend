@@ -205,6 +205,6 @@ The repository is pre-configured for **Vercel** deployment — `vercel.json` and
 
 ## Configuration Mapping
 
-The GUI exposes all parameters documented in the parent [CONFIG.md](../CONFIG.md). A live JSON preview of the generated config is available on the **Configure → Config Preview** tab.
+The GUI exposes all parameters documented in [CONFIG.md](CONFIG.md). A live JSON preview of the generated config is available on the **Configure → Config Preview** tab.
 
 [Back to top](#TOP)

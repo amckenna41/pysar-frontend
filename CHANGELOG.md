@@ -1,0 +1,71 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+
+---
+
+## [Unreleased]
+
+---
+
+## [1.0.0] — 2026-04-10
+
+### Added
+
+#### Application
+- Four-step encoding wizard: Upload → Configure → Encode → Results
+- Landing page with animated hero, feature highlights, encoding strategy overview, and built-in dataset showcase
+- Dark mode toggle (persisted across sessions)
+- Sidebar navigation with mobile-responsive overlay and collapsible layout
+- "How To" tutorial modal with four-step walkthrough
+- Config history — save and reload named configurations via browser `localStorage`
+
+#### Step 1 — Upload
+- Drag-and-drop dataset upload supporting `.txt`, `.csv`, and `.tsv` formats
+- Load example dataset directly from four built-in datasets (thermostability, absorption, enantioselectivity, localization)
+- Live dataset preview table with sequence and activity column auto-detection
+- Sequence validation — flags invalid amino acids, empty sequences, and length statistics
+- Activity distribution histogram with skewness and kurtosis stats
+- One-click remediation for duplicates, missing sequences, missing activity values (mean / median / remove), and outliers (winsorize / mean / remove)
+- Pre-calculated descriptors CSV upload as an alternative to on-the-fly encoding
+
+#### Step 2 — Configure
+- Model configuration panel — algorithm selection (Ridge, Lasso, ElasticNet, SVR, PLS, Random Forest, Gradient Boosting, KNN) with hyperparameter controls
+- Descriptor configuration panel — full protpy descriptor catalogue with metaparameter forms per descriptor
+- DSP configuration panel — Savitzky-Golay, median, FIR, and FFT filter options with parameter validation
+- Live JSON config preview tab
+- AAIndex1 explorer — searchable/filterable catalogue of all 566 AAIndex1 physicochemical indices with category filter
+- Descriptor explorer — interactive catalogue with per-descriptor heatmap visualisation
+
+#### Step 3 — Encode
+- Strategy selection: AAI (AAIndex1), Descriptor, or combined AAI+Descriptor
+- Encoding job submission with background threading
+- Real-time log streaming and progress bar via polling
+- Cancel running job
+- Hard-block UI prevents re-submission while a job is running
+
+#### Step 4 — Results
+- Sortable and filterable results table (by R², RMSE, MAE, Pearson r)
+- R² bar chart with colour-coded performance bands
+- R² distribution histogram
+- Category/descriptor-group breakdown chart
+- Side-by-side metric comparison chart (R², RMSE, MAE, Pearson r)
+- Export results as CSV, Excel, or JSON
+- "Use this model" — pre-fills Step 3 with the selected index/descriptor for re-run
+
+#### Job Management
+- Jobs panel — full job history with search, filter by status, sort, and bulk-delete
+- Per-job status badges (pending / running / complete / failed / cancelled)
+- Job result CSV export from history panel
+
+#### Infrastructure
+- FastAPI backend with 18 REST endpoints
+- Zustand global state management
+- Axios API client with exponential-backoff retry and request timeout
+- `formatApiError` / `toastApiError` error-handling helpers
+- React `ErrorBoundary` with retry for all major panels
+- Shimmer skeleton loading placeholders throughout
+- Vercel deployment configuration (`vercel.json` + `api/index.py` ASGI adapter)
+- `start.sh` convenience script to launch backend and frontend concurrently
