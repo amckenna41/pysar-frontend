@@ -19,7 +19,7 @@ import {
 } from '@heroicons/react/24/outline'
 import toast from 'react-hot-toast'
 import { useAppStore } from '../store/appStore'
-import { startEncoding, getJob, getAaiIndicesFull, cancelJob, getDescriptors, uploadDataset } from '../utils/api'
+import { startEncoding, getJob, getAaiIndicesFull, cancelJob, getDescriptors, uploadDataset, checkBackend } from '../utils/api'
 
 // ── Descriptor names loaded from backend (pySAR v2.5.0) ──────────────────────
 // Falls back to empty array until the fetch resolves; shown in the multi-select grid
@@ -124,12 +124,19 @@ export default function Step3Encode() {
       .catch(() => {})
   }, [])
 
+  // ── Backend availability check ────────────────────────────────────────────
+  useEffect(() => {
+    checkBackend().then(setBackendAvailable)
+  }, [])
+
   // ── New UI state ──────────────────────────────────────────────────────────
   const [showDryRun, setShowDryRun]               = useState(false)
   const [showConfigSnapshot, setShowConfigSnapshot] = useState(false)
   const [useResume, setUseResume]                 = useState(false)
   // Dismissed warning keys (e.g. 'bigJob', 'descLag')
   const [dismissedWarnings, setDismissedWarnings]   = useState(new Set())
+  // null = checking, true = reachable, false = unreachable
+  const [backendAvailable, setBackendAvailable]     = useState(null)
 
   // ── Fetch AAI records once; use in-store cache to avoid repeat requests ─────
   useEffect(() => {
@@ -369,6 +376,8 @@ export default function Step3Encode() {
   // ── Submit job ────────────────────────────────────────────────────────────
   async function handleRun() {
     if (!dataset) { toast.error('No dataset loaded'); return }
+    // Guard: encoding requires the backend — surface clearly rather than mid-op failure
+    if (backendAvailable === false) { toast.error('Backend not connected — deploy the backend and set VITE_API_URL'); return }
     // Validate required columns are selected
     if (!dataset.seq_col) { toast.error('Select a sequence column in Step 1 first'); return }
     if (!dataset.act_col) { toast.error('Select an activity column in Step 1 first'); return }
@@ -383,7 +392,7 @@ export default function Step3Encode() {
         // Re-read from store for payload building below
         Object.assign(dataset, { file_id: uploaded.file_id, file_path: uploaded.file_path })
       } catch (err) {
-        toast.error('Backend not reachable — set VITE_API_URL to deploy the backend')
+        toast.error('Dataset upload failed — check the backend is running')
         return
       }
     }
@@ -445,6 +454,22 @@ export default function Step3Encode() {
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
+      {/* ── Backend unavailable banner ── */}
+      {backendAvailable === false && (
+        <div className="flex gap-3 items-start rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-600 p-4 text-sm">
+          <svg className="w-5 h-5 shrink-0 text-amber-500 mt-0.5" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+          </svg>
+          <div>
+            <p className="font-semibold text-amber-800 dark:text-amber-200">Backend not connected</p>
+            <p className="text-amber-700 dark:text-amber-300 mt-0.5">
+              Encoding requires the pySAR backend. Deploy it to Railway, Render, or Fly.io and set the{' '}
+              <code className="font-mono text-xs bg-amber-100 dark:bg-amber-800 px-1 rounded">VITE_API_URL</code>{' '}
+              environment variable in Vercel, or run the backend locally.
+            </p>
+          </div>
+        </div>
+      )}
       {/* ── Strategy cards ── */}
       <div>
         <p className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3">
@@ -1041,7 +1066,7 @@ export default function Step3Encode() {
           <button
             className="btn-primary"
             onClick={handleRun}
-            disabled={isRunning}
+            disabled={isRunning || backendAvailable === false}
           >
             <PlayIcon className="w-4 h-4" />
             {isRunning ? 'Running…' : isDone ? 'Rerun Encoding' : 'Start Encoding'}

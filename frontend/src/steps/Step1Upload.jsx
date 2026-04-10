@@ -165,6 +165,19 @@ export default function Step1Upload() {
     }
   }
 
+  // ── Lazy-upload helper ─────────────────────────────────────────────────────
+  // Datasets loaded via example datasets are parsed client-side (_pendingFile set,
+  // file_path null). Before any fix that needs a server-side file_id, upload first.
+  async function ensureUploaded(current) {
+    if (!current?.file_path && current?._pendingFile) {
+      const uploaded = await uploadDataset(current._pendingFile)
+      const merged = { ...current, file_id: uploaded.file_id, file_path: uploaded.file_path, _pendingFile: null }
+      setDataset(merged)
+      return merged
+    }
+    return current
+  }
+
   // ── Deduplicate ────────────────────────────────────────────────────────────
   async function handleDeduplicate() {
     if (!dataset) return
@@ -172,7 +185,8 @@ export default function Step1Upload() {
     // Save snapshot before modifying so user can restore
     if (!originalDataset) setOriginalDataset(dataset)
     try {
-      const result = await deduplicateDataset(dataset.file_id, dataset.seq_col)
+      const ds = await ensureUploaded(dataset)
+      const result = await deduplicateDataset(ds.file_id, ds.seq_col)
       const removed = result.removed ?? 0
       setDataset({ ...result, seq_col: result.seq_col_guess, act_col: result.act_col_guess })
       toast.success(`Removed ${removed} duplicate sequence${removed !== 1 ? 's' : ''}`)
@@ -190,7 +204,8 @@ export default function Step1Upload() {
     setFixingOp(op)
     if (!originalDataset) setOriginalDataset(dataset)
     try {
-      const result = await fixMissingActivity(dataset.file_id, dataset.seq_col, dataset.act_col, method)
+      const ds = await ensureUploaded(dataset)
+      const result = await fixMissingActivity(ds.file_id, ds.seq_col, ds.act_col, method)
       setDataset({ ...result, seq_col: result.seq_col_guess, act_col: result.act_col_guess })
       setShowActFixOptions(false)
       const label = method === 'mean' ? 'mean imputation' : method === 'median' ? 'median imputation' : 'row removal'
@@ -209,7 +224,8 @@ export default function Step1Upload() {
     setFixingOp(op)
     if (!originalDataset) setOriginalDataset(dataset)
     try {
-      const result = await fixOutliers(dataset.file_id, dataset.seq_col, dataset.act_col, method)
+      const ds = await ensureUploaded(dataset)
+      const result = await fixOutliers(ds.file_id, ds.seq_col, ds.act_col, method)
       setDataset({ ...result, seq_col: result.seq_col_guess, act_col: result.act_col_guess })
       setShowOutlierFixOptions(false)
       const count = dataset.outlier_info?.outlier_count ?? result.affected ?? 0

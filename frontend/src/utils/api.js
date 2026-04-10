@@ -157,6 +157,19 @@ export async function fixOutliers(fileId, seqCol, actCol, method) {
   return data
 }
 
+/**
+ * Ping the backend health endpoint. Returns true if reachable, false otherwise.
+ * @returns {Promise<boolean>}
+ */
+export async function checkBackend() {
+  try {
+    await client.get('/health', { timeout: 4000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
 // Hardcoded list — served as static assets from /example_datasets/, no backend needed
 const EXAMPLE_DATASETS = [
   { name: 'thermostability',   filename: 'thermostability.txt',   description: 'Enzyme thermostability (T50) — 261 protein variants' },
