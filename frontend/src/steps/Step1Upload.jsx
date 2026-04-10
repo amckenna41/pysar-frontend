@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { useDropzone } from 'react-dropzone'
 import {
   CloudArrowUpIcon,
@@ -95,7 +95,8 @@ export default function Step1Upload() {
   const [error, setError]               = useState(null)
   const [logTransform, setLogTransform] = useState(false)      // activity histogram toggle
   const [showSamples, setShowSamples]   = useState(false)      // sample dataset panel
-  const [sampleList, setSampleList]     = useState(null)       // fetched once
+  // Static list — no backend call needed; getExampleDatasets() is now synchronous
+  const [sampleList, setSampleList]     = useState(() => getExampleDatasets().datasets)
   const [loadingSample, setLoadingSample] = useState(null)     // name of sample being loaded
   const [previewSample, setPreviewSample] = useState(null)     // which sample preview is expanded
   const [deduplicating, setDeduplicating] = useState(false)
@@ -111,15 +112,6 @@ export default function Step1Upload() {
   const [showActFixOptions, setShowActFixOptions] = useState(false)
   // Whether the outlier-fix options row is expanded inside the outlier banner
   const [showOutlierFixOptions, setShowOutlierFixOptions] = useState(false)
-
-  // Fetch sample list when panel first opens
-  useEffect(() => {
-    if (showSamples && !sampleList) {
-      getExampleDatasets()
-        .then((d) => setSampleList(d.datasets))
-        .catch(() => setSampleList([]))
-    }
-  }, [showSamples, sampleList])
 
   // ── File upload handler ────────────────────────────────────────────────────
   const onDrop = useCallback(

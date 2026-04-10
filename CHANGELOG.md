@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+- Example dataset listing and loading no longer require a backend API call — the four built-in datasets are served as static files from `frontend/public/example_datasets/` (Vercel CDN). Loading a sample fetches the static file then calls the normal upload endpoint, returning the same response shape as a manual file upload.
+- Removed the `getExampleDatasets` API call and its `useEffect` from Step1Upload; the list is now initialised synchronously from a hardcoded constant in `api.js`.
+
 ---
 
 ## [1.0.0] — 2026-04-10

@@ -156,23 +156,38 @@ export async function fixOutliers(fileId, seqCol, actCol, method) {
   return data
 }
 
+// Hardcoded list — served as static assets from /example_datasets/, no backend needed
+const EXAMPLE_DATASETS = [
+  { name: 'thermostability',   filename: 'thermostability.txt',   description: 'Enzyme thermostability (T50) — 261 protein variants' },
+  { name: 'absorption',        filename: 'absorption.txt',        description: 'UV absorption wavelength — 179 fluorescent protein variants' },
+  { name: 'enantioselectivity',filename: 'enantioselectivity.txt',description: 'Enzyme enantioselectivity — 152 lipase variants' },
+  { name: 'localization',      filename: 'localization.txt',      description: 'Subcellular localization score — protein sequences' },
+]
+
 /**
- * List available built-in sample datasets.
- * @returns {Promise<{datasets: object[]}>}
+ * Return the static list of built-in sample datasets (no backend call).
+ * @returns {{datasets: object[]}}
  */
-export async function getExampleDatasets() {
-  const { data } = await client.get('/example-datasets')
-  return data
+export function getExampleDatasets() {
+  return { datasets: EXAMPLE_DATASETS }
 }
 
 /**
- * Load a built-in sample dataset by name; returns same shape as uploadDataset.
+ * Load a built-in sample dataset: fetches the static file from the CDN then
+ * uploads it to the backend exactly like a normal file upload, returning the
+ * same response shape as uploadDataset().
  * @param {string} name
  * @returns {Promise<object>}
  */
 export async function loadExampleDataset(name) {
-  const { data } = await client.post(`/example-dataset/${name}`)
-  return data
+  const entry = EXAMPLE_DATASETS.find((d) => d.name === name)
+  if (!entry) throw new Error(`Unknown example dataset: ${name}`)
+  // Fetch the static asset bundled in frontend/public/example_datasets/
+  const response = await fetch(`/example_datasets/${entry.filename}`)
+  if (!response.ok) throw new Error(`Could not fetch example dataset file: ${response.status}`)
+  const blob = await response.blob()
+  const file = new File([blob], entry.filename, { type: 'text/plain' })
+  return uploadDataset(file)
 }
 
 // ── AAI indices ────────────────────────────────────────────────────────────────
