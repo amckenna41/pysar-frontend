@@ -1,0 +1,11 @@
+# Python dependencies for Vercel serverless functions
+fastapi>=0.115.0
+python-multipart>=0.0.9
+pandas>=2.0.0
+numpy
+scipy
+scikit-learn
+aaindex>=1.2.0
+protpy>=1.3.0
+pysar>=2.5.0
+requests>=2.25.0

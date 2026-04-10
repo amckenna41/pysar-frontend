@@ -1,0 +1,17 @@
+{
+  "name": "pysar-app",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "prestart": "lsof -ti :8000 | xargs kill -9 2>/dev/null || true",
+    "start": "concurrently --kill-others-on-fail --names \"API,UI\" --prefix-colors \"cyan,magenta\" \"npm run backend\" \"npm run frontend\"",
+    "dev": "npm run start",
+    "backend": "python3 -m uvicorn backend.main:app --reload --port 8000",
+    "frontend": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "install:all": "npm --prefix frontend install"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
