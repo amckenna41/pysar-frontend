@@ -1,11 +1,17 @@
 /**
  * Axios wrapper for all pySAR API calls.
- * All requests hit the /api prefix which Vite proxies to http://localhost:8000.
+ * In development, /api is proxied by Vite to http://localhost:8000.
+ * In production, set VITE_API_URL (e.g. https://your-backend.railway.app) in Vercel env vars.
  */
 import axios from 'axios'
 
+// Use absolute backend URL in production if provided, otherwise fall back to Vite proxy
+const BASE_URL = import.meta.env.VITE_API_URL
+  ? `${import.meta.env.VITE_API_URL}/api`
+  : '/api'
+
 const client = axios.create({
-  baseURL: '/api',
+  baseURL: BASE_URL,
   timeout: 30_000,
 })
 
