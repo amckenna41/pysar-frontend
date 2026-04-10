@@ -4,6 +4,7 @@
  * In production, set VITE_API_URL (e.g. https://your-backend.railway.app) in Vercel env vars.
  */
 import axios from 'axios'
+import { parseDatasetClientSide } from './parseDataset'
 
 // Use absolute backend URL in production if provided, otherwise fall back to Vite proxy
 const BASE_URL = import.meta.env.VITE_API_URL
@@ -174,20 +175,21 @@ export function getExampleDatasets() {
 
 /**
  * Load a built-in sample dataset: fetches the static file from the CDN then
- * uploads it to the backend exactly like a normal file upload, returning the
- * same response shape as uploadDataset().
+ * parses it entirely client-side — no backend call required.
+ * The returned object includes `_pendingFile` so Step 3 can lazily upload
+ * the file to the backend before submitting an encode job.
  * @param {string} name
  * @returns {Promise<object>}
  */
 export async function loadExampleDataset(name) {
   const entry = EXAMPLE_DATASETS.find((d) => d.name === name)
   if (!entry) throw new Error(`Unknown example dataset: ${name}`)
-  // Fetch the static asset bundled in frontend/public/example_datasets/
+  // Fetch static asset served by Vercel CDN
   const response = await fetch(`/example_datasets/${entry.filename}`)
   if (!response.ok) throw new Error(`Could not fetch example dataset file: ${response.status}`)
   const blob = await response.blob()
   const file = new File([blob], entry.filename, { type: 'text/plain' })
-  return uploadDataset(file)
+  return parseDatasetClientSide(file)
 }
 
 // ── AAI indices ────────────────────────────────────────────────────────────────

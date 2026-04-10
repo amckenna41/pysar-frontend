@@ -9,8 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Changed
-- Example dataset listing and loading no longer require a backend API call — the four built-in datasets are served as static files from `frontend/public/example_datasets/` (Vercel CDN). Loading a sample fetches the static file then calls the normal upload endpoint, returning the same response shape as a manual file upload.
+- Example dataset listing and loading no longer require a backend API call — the four built-in datasets are served as static files from `frontend/public/example_datasets/` (Vercel CDN). Loading a sample fetches the static file and parses it entirely client-side using a new `parseDataset.js` utility, returning the same response shape as the backend (columns, preview, stats, sequence validation, duplicate/missing/outlier detection).
 - Removed the `getExampleDatasets` API call and its `useEffect` from Step1Upload; the list is now initialised synchronously from a hardcoded constant in `api.js`.
+- Step 3 (Encode) performs a lazy upload of the example dataset file to the backend before submitting an encode job when `file_path` is null — this keeps Step 1 fully client-side while still allowing encoding when a backend is available. Clear error messaging shown if the backend is unreachable.
 
 ---
 

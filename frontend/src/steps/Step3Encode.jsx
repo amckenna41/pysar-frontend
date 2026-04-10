@@ -19,7 +19,7 @@ import {
 } from '@heroicons/react/24/outline'
 import toast from 'react-hot-toast'
 import { useAppStore } from '../store/appStore'
-import { startEncoding, getJob, getAaiIndicesFull, cancelJob, getDescriptors } from '../utils/api'
+import { startEncoding, getJob, getAaiIndicesFull, cancelJob, getDescriptors, uploadDataset } from '../utils/api'
 
 // ── Descriptor names loaded from backend (pySAR v2.5.0) ──────────────────────
 // Falls back to empty array until the fetch resolves; shown in the multi-select grid
@@ -95,7 +95,7 @@ function estimateModels(strategy, aaiIndices, selectedDescs, descCombo, maxModel
 export default function Step3Encode() {
   const {
     dataset, config, encoding, setEncoding, resetEncoding, setStep,
-    setJob, updateJob, job, setResults, clearJob,
+    setJob, updateJob, job, setResults, clearJob, setDataset,
     addJobToHistory, updateJobHistoryStatus,
     pendingRerun, clearPendingRerun,
     encodingQueue, addToQueue, shiftQueue, removeFromQueue, clearQueue,
@@ -372,6 +372,21 @@ export default function Step3Encode() {
     // Validate required columns are selected
     if (!dataset.seq_col) { toast.error('Select a sequence column in Step 1 first'); return }
     if (!dataset.act_col) { toast.error('Select an activity column in Step 1 first'); return }
+    // Lazy upload: example datasets are parsed client-side (file_path is null)
+    // Upload to the backend now so we have a real file_path for the encode job
+    if (!dataset.file_path && dataset._pendingFile) {
+      try {
+        toast('Uploading dataset to backend…', { duration: 2000 })
+        const uploaded = await uploadDataset(dataset._pendingFile)
+        // Merge the real file_id/file_path into the existing dataset state
+        setDataset({ ...dataset, file_id: uploaded.file_id, file_path: uploaded.file_path, _pendingFile: null })
+        // Re-read from store for payload building below
+        Object.assign(dataset, { file_id: uploaded.file_id, file_path: uploaded.file_path })
+      } catch (err) {
+        toast.error('Backend not reachable — set VITE_API_URL to deploy the backend')
+        return
+      }
+    }
     // Block if any autocorrelation descriptor lag exceeds the shortest sequence
     if (descWarnings.length > 0) {
       toast.error(
