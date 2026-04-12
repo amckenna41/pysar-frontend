@@ -27,6 +27,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Fly.io
+fly.toml
+
 # Git
 .git/
 .gitignore

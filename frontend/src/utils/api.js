@@ -1,7 +1,7 @@
 /**
  * Axios wrapper for all pySAR API calls.
  * In development, /api is proxied by Vite to http://localhost:8000.
- * In production, set VITE_API_URL (e.g. https://your-backend.railway.app) in Vercel env vars.
+ * In production, set VITE_API_URL (e.g. https://pysar-backend.fly.dev) in Vercel env vars.
  */
 import axios from 'axios'
 import { parseDatasetClientSide } from './parseDataset'

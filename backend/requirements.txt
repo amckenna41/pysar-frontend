@@ -2,4 +2,5 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9
 pandas>=2.0.0
+delayed>=0.11b1  # pysar dependency — only pre-release versions exist on PyPI
 pysar>=2.5.0
