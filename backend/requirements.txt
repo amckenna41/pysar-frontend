@@ -8,4 +8,5 @@ scikit-learn
 aaindex>=1.2.0
 protpy>=1.3.0
 requests>=2.25.0
-pysar>=2.5.0
+# Install pySAR directly from GitHub — the 'pysar' PyPI package is JPL's unrelated InSAR tool
+git+https://github.com/amckenna41/pySAR.git@main

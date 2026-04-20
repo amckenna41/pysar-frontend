@@ -3,9 +3,9 @@ FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
-# Install build tools needed for native extensions (scipy, numpy, etc.)
+# Install build tools needed for native extensions (scipy, numpy, etc.) and git for pip VCS installs
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ && \
+    gcc g++ git && \
     rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt ./
