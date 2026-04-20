@@ -291,9 +291,12 @@ export default function Step3Encode() {
   // ── Job polling ───────────────────────────────────────────────────────────
   useEffect(() => {
     if (!job?.job_id || job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') return
+    let consecutiveErrors = 0
+    const MAX_ERRORS = 5 // ~10s of failed polls before giving up
     const iv = setInterval(async () => {
       try {
         const data = await getJob(job.job_id)
+        consecutiveErrors = 0 // reset on success
         updateJob(data)
         if (data.status === 'completed') {
           // Store best R², timestamp and duration in history entry
@@ -317,7 +320,14 @@ export default function Step3Encode() {
           updateJobHistoryStatus(job.job_id, 'cancelled')
         }
       } catch {
-        // Network error — keep polling
+        // Count consecutive network errors; stop polling if backend is unreachable
+        consecutiveErrors++
+        if (consecutiveErrors >= MAX_ERRORS) {
+          updateJob({ status: 'failed', error: 'Backend unreachable — connection lost' })
+          updateJobHistoryStatus(job.job_id, { status: 'failed', error: 'Backend unreachable', completed_at: new Date().toISOString(), duration_ms: startTs ? Date.now() - startTs : null })
+          toast.error('Lost connection to backend — job marked as failed')
+          clearInterval(iv)
+        }
       }
     }, 2000)
     return () => clearInterval(iv)
@@ -430,13 +440,27 @@ export default function Step3Encode() {
   // ── Cancel running job ────────────────────────────────────────────────────
   async function handleCancel() {
     if (!job?.job_id) return
+    // If job is already in a terminal state, just update local UI
+    if (['completed', 'failed', 'cancelled'].includes(job.status)) {
+      updateJob({ status: 'cancelled' })
+      updateJobHistoryStatus(job.job_id, 'cancelled')
+      return
+    }
     try {
       await cancelJob(job.job_id)
       updateJob({ status: 'cancelled' })
       updateJobHistoryStatus(job.job_id, 'cancelled')
       toast('Job cancelled')
-    } catch {
-      toast.error('Could not cancel job')
+    } catch (err) {
+      // Network error — optimistically mark as cancelled in the UI anyway
+      // so the user isn't stuck; the backend will stop encoding on its own
+      if (!err?.response) {
+        updateJob({ status: 'cancelled' })
+        updateJobHistoryStatus(job.job_id, 'cancelled')
+        toast.warning('Network error — job marked cancelled locally')
+      } else {
+        toast.error('Could not cancel job')
+      }
     }
   }
 

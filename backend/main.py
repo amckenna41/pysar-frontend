@@ -13,7 +13,9 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -37,7 +39,11 @@ for _sp in _glob.glob(str(_PYSAR_REPO / ".venv" / "lib" / "python3.*" / "site-pa
     if _sp not in sys.path:
         sys.path.insert(1, _sp)
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
 logger = logging.getLogger("pysar_api")
 
 app = FastAPI(title="pySAR API", version="1.0.0", docs_url="/api/docs")
@@ -66,6 +72,41 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # In-memory job registry
 JOBS: Dict[str, Dict[str, Any]] = {}
+
+# ── Startup tasks ──────────────────────────────────────────────────────────────
+
+def _prewarm_pysar() -> None:
+    """Import pySAR eagerly so the first job doesn't pay the cold-start cost."""
+    try:
+        t0 = time.monotonic()
+        from pySAR.encoding import Encoding  # noqa: F401
+        logger.info("pySAR pre-warm complete in %.1fs", time.monotonic() - t0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pySAR pre-warm failed (will retry on first job): %s", exc)
+
+
+def _cleanup_upload_dir(max_age_hours: int = 6) -> None:
+    """Delete temp files in UPLOAD_DIR older than max_age_hours; runs hourly."""
+    while True:
+        time.sleep(3600)  # wait an hour before each sweep
+        cutoff = time.time() - max_age_hours * 3600
+        removed = 0
+        try:
+            for f in UPLOAD_DIR.iterdir():
+                if f.is_file() and f.stat().st_mtime < cutoff:
+                    f.unlink(missing_ok=True)
+                    removed += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Temp-file cleanup error: %s", exc)
+        if removed:
+            logger.info("Temp-file cleanup: removed %s file(s) older than %sh", removed, max_age_hours)
+
+
+@app.on_event("startup")
+def startup() -> None:
+    """Pre-warm pySAR and start background cleanup thread."""
+    threading.Thread(target=_prewarm_pysar, daemon=True).start()
+    threading.Thread(target=_cleanup_upload_dir, daemon=True, name="cleanup").start()
 
 
 # ── Pydantic request models ─────────────────────────────────────────────────────
@@ -342,10 +383,12 @@ def _estimate_total_models(req: EncodeRequest) -> int:
 def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.Event] = None) -> None:
     """Execute pySAR encoding in a background thread and update JOBS."""
     job = JOBS[job_id]
+    short_id = job_id[:8]
+    job_start = time.monotonic()
 
     def _log(msg: str) -> None:
         job["log"].append(msg)
-        logger.info("[%s] %s", job_id[:8], msg)
+        logger.info("[job:%s] %s", short_id, msg)
 
     def _cancelled() -> bool:
         """Return True if a cancel was requested (checks event + status flag)."""
@@ -353,30 +396,42 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
 
     config_path: Optional[Path] = None
     try:
-        if _cancelled():
-            return
-        job["status"] = "running"
-        job["progress"] = 10  # Phase 1: preparing config
-        _log("Preparing configuration…")
+        logger.info(
+            "[job:%s] Started — strategy=%s algorithm=%s n_jobs=%s max_models=%s",
+            short_id, req.strategy, req.algorithm, req.n_jobs, req.max_models,
+        )
 
+        if _cancelled():
+            _log("Cancelled before start.")
+            return
+
+        # Phase 1: build config
+        job["status"] = "running"
+        job["started_at"] = datetime.now(timezone.utc).isoformat()
+        job["progress"] = 10
+        _log("Preparing configuration…")
         config = _build_config(req)
         config_path = UPLOAD_DIR / f"{job_id}_config.json"
         config_path.write_text(json.dumps(config, indent=2))
+        logger.info("[job:%s] Config written to %s", short_id, config_path)
 
+        # Phase 2: load dataset via pySAR Encoding
         from pySAR.encoding import Encoding  # lazy import — pySAR may be heavy
-
-        job["progress"] = 20  # Phase 2: loading dataset
+        job["progress"] = 20
         _log("Initialising Encoding class…")
+        t0 = time.monotonic()
         encoding = Encoding(config_file=str(config_path), verbose=False)
         _log(
             f"Dataset loaded: {encoding.num_seqs} sequences "
-            f"× {encoding.sequence_length} residues"
+            f"× {encoding.sequence_length} residues "
+            f"(took {time.monotonic() - t0:.1f}s)"
         )
 
-        # Estimate and record total models before encoding starts
+        # Phase 3: estimate model count
         total_models = _estimate_total_models(req)
         job["total_models"] = total_models
-        job["progress"] = 35  # Phase 3: estimation done
+        job["progress"] = 35
+        logger.info("[job:%s] Estimated models: %s", short_id, total_models)
 
         # Common kwargs shared by all three encoding methods
         common: Dict[str, Any] = {
@@ -390,24 +445,35 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
 
         model_hint = f" ({total_models:,} models estimated)" if total_models else ""
         _log(f"Strategy: {req.strategy} — starting encoding{model_hint}…")
-        job["progress"] = 45  # Phase 4: encoding started
+        job["progress"] = 45
 
         if _cancelled():
             _log("Cancelled before encoding started.")
             return
 
+        # Phase 4: run encoding
+        t_enc = time.monotonic()
         if req.strategy == "aai":
+            logger.info("[job:%s] Running aai_encoding with %s index(es)", short_id, len(req.aai_indices or []) or "all")
             results_df = encoding.aai_encoding(
                 aai_indices=req.aai_indices or None,
                 **common,
             )
         elif req.strategy == "descriptor":
+            logger.info("[job:%s] Running descriptor_encoding with %s descriptor(s) combo=%s", short_id, len(req.selected_descriptors or []) or "all", req.desc_combo)
             results_df = encoding.descriptor_encoding(
                 descriptors=req.selected_descriptors or None,
                 desc_combo=req.desc_combo,
                 **common,
             )
         elif req.strategy == "aai_descriptor":
+            logger.info(
+                "[job:%s] Running aai_descriptor_encoding — %s index(es), %s descriptor(s) combo=%s",
+                short_id,
+                len(req.aai_indices or []) or "all",
+                len(req.selected_descriptors or []) or "all",
+                req.desc_combo,
+            )
             results_df = encoding.aai_descriptor_encoding(
                 aai_indices=req.aai_indices or None,
                 descriptors=req.selected_descriptors or None,
@@ -417,27 +483,38 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
         else:
             raise ValueError(f"Unknown strategy: {req.strategy!r}")
 
+        enc_elapsed = time.monotonic() - t_enc
+        logger.info("[job:%s] Encoding finished in %.1fs", short_id, enc_elapsed)
+
         if _cancelled():
             _log("Cancelled after encoding — results discarded.")
             return
 
+        # Phase 5: finalise results
         n_models = len(results_df)
-        _log(f"Complete — {n_models} model(s) evaluated.")
+        total_elapsed = time.monotonic() - job_start
+        _log(f"Complete — {n_models} model(s) evaluated in {total_elapsed:.1f}s total.")
+        logger.info("[job:%s] Job complete — %s model(s) | total=%.1fs enc=%.1fs", short_id, n_models, total_elapsed, enc_elapsed)
         job["status"] = "completed"
+        job["completed_at"] = datetime.now(timezone.utc).isoformat()
         job["progress"] = 100
-        job["models_completed"] = n_models  # final count after encoding
+        job["models_completed"] = n_models
         job["partial_results"] = results_df.head(10).to_dict(orient="records")  # top-10 preview
         job["results"] = results_df.to_dict(orient="records")
         job["columns"] = results_df.columns.tolist()
 
     except Exception as exc:  # noqa: BLE001
+        elapsed = time.monotonic() - job_start
         job["status"] = "failed"
+        job["completed_at"] = datetime.now(timezone.utc).isoformat()
         job["error"] = str(exc)
         _log(f"ERROR: {exc}")
+        logger.exception("[job:%s] Job failed after %.1fs — %s", short_id, elapsed, exc)
     finally:
         if config_path and config_path.exists():
             try:
                 config_path.unlink()
+                logger.info("[job:%s] Temp config cleaned up", short_id)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -447,6 +524,7 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
 @app.get("/api/health")
 def health() -> Dict[str, str]:
     """Liveness check."""
+    logger.info("Health check requested")
     return {"status": "ok"}
 
 
@@ -1252,6 +1330,10 @@ _CANCEL_EVENTS: Dict[str, threading.Event] = {}
 def start_encoding(req: EncodeRequest) -> Dict[str, str]:
     """Submit an encoding job; returns a job_id for polling."""
     job_id = str(uuid.uuid4())
+    logger.info(
+        "[job:%s] Encode request received — strategy=%s algorithm=%s file=%s",
+        job_id[:8], req.strategy, req.algorithm, req.file_path,
+    )
     cancel_event = threading.Event()
     _CANCEL_EVENTS[job_id] = cancel_event
     JOBS[job_id] = {
@@ -1267,24 +1349,36 @@ def start_encoding(req: EncodeRequest) -> Dict[str, str]:
         "error": None,
         "strategy": req.strategy,
         "algorithm": req.algorithm,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": None,
+        "completed_at": None,
     }
     thread = threading.Thread(target=_run_job, args=(job_id, req, cancel_event), daemon=True)
     thread.start()
+    logger.info("[job:%s] Background thread started", job_id[:8])
     return {"job_id": job_id}
 
 
 @app.post("/api/jobs/{job_id}/cancel")
 def cancel_job(job_id: str) -> Dict[str, str]:
-    """Request cancellation of a running job."""
+    """Request cancellation of a running job.
+
+    Returns 200 even if the job is unknown (e.g. it ran on a different Cloud Run
+    instance) so the frontend always treats the click as successful.
+    """
     if job_id not in JOBS:
-        raise HTTPException(status_code=404, detail="Job not found.")
-    # Signal the cancel event so the thread can detect it between phase boundaries
+        # Job may live on a different container instance — treat as already stopped
+        logger.info("[job:%s] Cancel requested but job not found on this instance (already done or different instance)", job_id[:8])
+        return {"cancelled": job_id}
+    # Signal the cancel event so the thread detects it between phase boundaries
     if job_id in _CANCEL_EVENTS:
         _CANCEL_EVENTS[job_id].set()
     job = JOBS[job_id]
     if job["status"] in {"pending", "running"}:
         job["status"] = "cancelled"
+        job["completed_at"] = datetime.now(timezone.utc).isoformat()
         job["log"].append("Cancelled by user.")
+        logger.info("[job:%s] Cancelled by user", job_id[:8])
     return {"cancelled": job_id}
 
 
@@ -1310,3 +1404,24 @@ def delete_job(job_id: str) -> Dict[str, str]:
     """Remove a job from the registry."""
     JOBS.pop(job_id, None)
     return {"deleted": job_id}
+
+
+@app.get("/api/version")
+def get_version() -> Dict[str, str]:
+    """Return backend, pySAR, and Python version strings for diagnostics."""
+    import sys as _sys
+    pysar_version = "unknown"
+    try:
+        import importlib.metadata as _meta
+        pysar_version = _meta.version("pysar")
+    except Exception:  # noqa: BLE001
+        try:
+            from pySAR import __version__ as _v
+            pysar_version = _v
+        except Exception:  # noqa: BLE001
+            pass
+    return {
+        "backend_version": "2.5.1",
+        "pysar_version": pysar_version,
+        "python_version": _sys.version,
+    }

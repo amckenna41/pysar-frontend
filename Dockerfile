@@ -29,6 +29,7 @@ WORKDIR /app/backend
 
 EXPOSE 8080
 
-# Use exec form directly — avoids shell variable expansion issues in Cloud Run.
-# Cloud Run always routes traffic to port 8080, so hard-coding it is correct.
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Single worker: JOBS/cancel state is in-memory and must live in one process.
+# FastAPI is async so concurrent API requests are handled without extra workers;
+# encoding runs in background threads and doesn't block the event loop.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--loop", "uvloop"]
