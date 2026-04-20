@@ -218,20 +218,36 @@ export async function getAaiIndices() {
 
 /**
  * Fetch all AAI1 records with code + title for the explorer.
+ * Falls back to the bundled static JSON if the backend is unreachable.
  * @returns {Promise<{code: string, title: string}[]>}
  */
 export async function getAaiIndicesFull() {
-  const { data } = await client.get('/aai-indices-full')
-  return data.records
+  try {
+    const { data } = await client.get('/aai-indices-full')
+    return data.records
+  } catch {
+    // Backend unavailable — use bundled static fallback
+    const res = await fetch('/aai_indices.json')
+    const data = await res.json()
+    return data.records
+  }
 }
 
 /**
  * Fetch the full descriptor catalogue with metadata.
+ * Falls back to the bundled static JSON if the backend is unreachable.
  * @returns {Promise<object[]>}
  */
 export async function getDescriptors() {
-  const { data } = await client.get('/descriptors')
-  return data.descriptors
+  try {
+    const { data } = await client.get('/descriptors')
+    return data.descriptors
+  } catch {
+    // Backend unavailable — use bundled static fallback
+    const res = await fetch('/descriptors.json')
+    const data = await res.json()
+    return data.descriptors
+  }
 }
 
 // ── Health ─────────────────────────────────────────────────────────────────────
