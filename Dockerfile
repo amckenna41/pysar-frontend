@@ -29,5 +29,6 @@ WORKDIR /app/backend
 
 EXPOSE 8080
 
-# Cloud Run injects $PORT (default 8080); fall back to 8080 for local Docker runs
-CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+# Use exec form directly — avoids shell variable expansion issues in Cloud Run.
+# Cloud Run always routes traffic to port 8080, so hard-coding it is correct.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
