@@ -23,7 +23,11 @@ COPY --from=builder /install /usr/local
 COPY backend/ ./backend/
 COPY example_datasets/ ./example_datasets/
 
-EXPOSE 8000
+# Run uvicorn from the backend directory so Python resolves 'main:app' directly,
+# avoiding namespace-package issues with 'backend.main:app' from /app.
+WORKDIR /app/backend
 
-# Run the FastAPI app with uvicorn
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+EXPOSE 8080
+
+# Cloud Run injects $PORT (default 8080); fall back to 8080 for local Docker runs
+CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]

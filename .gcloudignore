@@ -1,0 +1,29 @@
+# Files excluded from the Cloud Build upload context.
+# Keeps build times fast by not shipping unnecessary files to Google Cloud Build.
+
+# Frontend — not needed for the backend image
+frontend/
+
+# Python envs
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Outputs / data not needed in the image
+outputs/
+images/
+
+# Platform-specific config not needed in the image
+fly.toml
+vercel.json
+.vercelignore
+
+# Git
+.git/
+.gitignore
+
+# Editor
+.vscode/
+.DS_Store
