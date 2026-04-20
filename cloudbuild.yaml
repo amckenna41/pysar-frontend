@@ -3,7 +3,7 @@
 #   gcloud builds submit --config cloudbuild.yaml .
 
 substitutions:
-  _REGION: europe-west2           # change to your preferred region
+  _REGION: europe-west1           # region where the Cloud Run service is deployed
   _SERVICE: pysar-backend
   _REPO: pysar                    # Artifact Registry repository name
   _CORS_ORIGIN: https://pysar-app.vercel.app
