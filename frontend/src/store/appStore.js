@@ -41,7 +41,7 @@ export const DEFAULT_CONFIG = {
     quasi_sequence_order: { lag: 30, weight: 0.1, distance_matrix: 'schneider-wrede' },
     pseudo_amino_acid_composition: { lambda: 30, weight: 0.05, properties: [] },
     amphiphilic_pseudo_amino_acid_composition: { lambda: 30, weight: 0.5 },
-    // New configurable descriptors added in pySAR v2.5.0 / protpy v1.3.0
+    // New configurable descriptors added in pySAR v2.5.1 / protpy v1.3.0
     charge_distribution: { ph: 7.4 },
     kmer_composition: { k: 2 },
     reduced_alphabet_composition: { alphabet_size: 6 },

@@ -21,7 +21,7 @@ import toast from 'react-hot-toast'
 import { useAppStore } from '../store/appStore'
 import { startEncoding, getJob, getAaiIndicesFull, cancelJob, getDescriptors, uploadDataset, checkBackend } from '../utils/api'
 
-// ── Descriptor names loaded from backend (pySAR v2.5.0) ──────────────────────
+// ── Descriptor names loaded from backend (pySAR v2.5.1) ──────────────────────
 // Falls back to empty array until the fetch resolves; shown in the multi-select grid
 
 // Autocorrelation descriptors — require sequences >= lag residues

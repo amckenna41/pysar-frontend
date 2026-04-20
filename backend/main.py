@@ -310,7 +310,7 @@ def _build_config(req: EncodeRequest) -> Dict[str, Any]:
 
 # ── Model count estimator ──────────────────────────────────────────────────────
 
-_DEFAULT_DESC_COUNT = 33  # matches ALL_DESCRIPTORS in the frontend UI (pySAR v2.5.0)
+_DEFAULT_DESC_COUNT = 33  # matches ALL_DESCRIPTORS in the frontend UI (pySAR v2.5.1)
 
 
 def _estimate_total_models(req: EncodeRequest) -> int:
@@ -698,7 +698,7 @@ _DESCRIPTOR_CATALOGUE = [
         "aa_values": _KD_HYDROPHOBICITY,
         "aa_values_label": "Kyte-Doolittle hydrophobicity (default scale)",
     },
-    # ── New descriptors added in pySAR v2.5.0 / protpy v1.3.0 ──────────────────
+    # ── New descriptors added in pySAR v2.5.1 / protpy v1.3.0 ──────────────────
     {
         "name": "gravy",
         "label": "GRAVY (Grand Average Hydropathicity)",

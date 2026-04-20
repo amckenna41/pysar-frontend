@@ -482,7 +482,7 @@ function DescriptorParams({ descKey, params, desc, setDesc, toggleProp }) {
         </div>
       )}
 
-      {/* ── New params for pySAR v2.5.0 descriptors ── */}
+      {/* ── New params for pySAR v2.5.1 descriptors ── */}
 
       {params.includes('ph') && (
         <div>
