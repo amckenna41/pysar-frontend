@@ -7,8 +7,9 @@ import {
   Cell,
   PieChart, Pie, Legend,
   ScatterChart, Scatter, ZAxis,
+  ReferenceLine,
 } from 'recharts'
-import { ArrowDownTrayIcon } from '@heroicons/react/24/outline'
+import { ArrowDownTrayIcon, PhotoIcon } from '@heroicons/react/24/outline'
 
 const METRIC_COLS = ['R2', 'RMSE', 'MSE', 'MAE', 'RPD', 'Explained_Var']
 const PIE_COLOURS = ['#6366f1','#10b981','#f59e0b','#ef4444','#3b82f6','#8b5cf6','#14b8a6','#f97316','#ec4899','#84cc16']
@@ -21,29 +22,62 @@ function r2Colour(value, min, max) {
   return `rgb(${r},${g},80)`
 }
 
-// ── Download chart as SVG ─────────────────────────────────────────────────────
-function useChartDownload(ref, filename = 'chart.svg') {
-  return useCallback(() => {
-    const el = ref.current
-    if (!el) return
-    const svg = el.querySelector('svg')
-    if (!svg) return
-    const clone = svg.cloneNode(true)
-    // Inline a white background so it's legible
-    clone.setAttribute('style', 'background:#fff')
-    const blob = new Blob([new XMLSerializer().serializeToString(clone)], { type: 'image/svg+xml' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = filename
-    a.click()
-    URL.revokeObjectURL(a.href)
-  }, [ref, filename])
+// ── Download chart SVG helper ─────────────────────────────────────────────────
+function getSvgClone(el) {
+  const svg = el?.querySelector('svg')
+  if (!svg) return null
+  const clone = svg.cloneNode(true)
+  clone.setAttribute('style', 'background:#fff')
+  return clone
 }
 
-// ── Chart card wrapper with optional SVG download button ─────────────────────
+// ── SVG export ────────────────────────────────────────────────────────────────
+function downloadSVG(el, filename) {
+  const clone = getSvgClone(el)
+  if (!clone) return
+  const blob = new Blob([new XMLSerializer().serializeToString(clone)], { type: 'image/svg+xml' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+// ── PNG export: SVG → canvas → PNG blob ───────────────────────────────────────
+function downloadPNG(el, filename) {
+  const clone = getSvgClone(el)
+  if (!clone) return
+  const svgStr = new XMLSerializer().serializeToString(clone)
+  const svgBlob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' })
+  const url = URL.createObjectURL(svgBlob)
+  const img = new Image()
+  img.onload = () => {
+    const canvas = document.createElement('canvas')
+    // Scale 2× for retina-quality output
+    const scale = 2
+    canvas.width  = (img.width  || 800) * scale
+    canvas.height = (img.height || 400) * scale
+    const ctx = canvas.getContext('2d')
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.scale(scale, scale)
+    ctx.drawImage(img, 0, 0)
+    URL.revokeObjectURL(url)
+    canvas.toBlob((blob) => {
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = filename
+      a.click()
+      URL.revokeObjectURL(a.href)
+    }, 'image/png')
+  }
+  img.src = url
+}
+
+// ── Chart card wrapper with SVG + PNG download dropdown ───────────────────────
 function ChartCard({ title, subtitle, filename, children }) {
   const ref = useRef(null)
-  const download = useChartDownload(ref, filename ?? `${title.replace(/\s+/g, '_')}.svg`)
+  const baseName = filename ?? `${title.replace(/\s+/g, '_')}`
   return (
     <div className="card p-4 space-y-2">
       <div className="flex items-start justify-between">
@@ -51,14 +85,32 @@ function ChartCard({ title, subtitle, filename, children }) {
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">{title}</h3>
           {subtitle && <p className="text-xs text-gray-400 mt-0.5">{subtitle}</p>}
         </div>
-        <button
-          type="button"
-          onClick={download}
-          title="Download as SVG"
-          className="text-gray-300 hover:text-indigo-500 shrink-0"
-        >
-          <ArrowDownTrayIcon className="w-4 h-4" />
-        </button>
+        {/* Export dropdown — SVG and PNG ────────────────────────────────────── */}
+        <div className="relative group shrink-0">
+          <button
+            type="button"
+            title="Download chart"
+            className="text-gray-300 hover:text-indigo-500"
+          >
+            <ArrowDownTrayIcon className="w-4 h-4" />
+          </button>
+          <div className="absolute right-0 top-full mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 z-20 hidden group-hover:block min-w-[90px]">
+            <button
+              type="button"
+              onClick={() => downloadSVG(ref.current, `${baseName}.svg`)}
+              className="flex items-center gap-1.5 w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
+            >
+              <ArrowDownTrayIcon className="w-3 h-3" /> SVG
+            </button>
+            <button
+              type="button"
+              onClick={() => downloadPNG(ref.current, `${baseName}.png`)}
+              className="flex items-center gap-1.5 w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
+            >
+              <PhotoIcon className="w-3 h-3" /> PNG
+            </button>
+          </div>
+        </div>
       </div>
       <div ref={ref}>{children}</div>
     </div>
@@ -66,7 +118,7 @@ function ChartCard({ title, subtitle, filename, children }) {
 }
 
 // ── R² distribution histogram ─────────────────────────────────────────────────
-function R2Histogram({ rows }) {
+function R2Histogram({ rows, disableAnimation }) {
   const r2Vals = rows.map((r) => r.R2).filter((v) => typeof v === 'number')
   if (!r2Vals.length) return null
 
@@ -92,7 +144,7 @@ function R2Histogram({ rows }) {
           <XAxis dataKey="label" tick={{ fontSize: 10 }} />
           <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
           <Tooltip formatter={(v) => [`${v} models`, 'Count']} />
-          <Bar dataKey="count" fill="#6366f1" radius={[3, 3, 0, 0]} />
+          <Bar dataKey="count" fill="#6366f1" radius={[3, 3, 0, 0]} isAnimationActive={!disableAnimation} />
         </BarChart>
       </ResponsiveContainer>
     </ChartCard>
@@ -100,7 +152,7 @@ function R2Histogram({ rows }) {
 }
 
 // ── Metric comparison (avg, min, max per metric) ──────────────────────────────
-function MetricCompare({ rows }) {
+function MetricCompare({ rows, disableAnimation }) {
   const metrics = METRIC_COLS.filter((m) => rows.some((r) => typeof r[m] === 'number'))
   if (!metrics.length) return null
 
@@ -122,9 +174,9 @@ function MetricCompare({ rows }) {
           <XAxis dataKey="metric" tick={{ fontSize: 10 }} />
           <YAxis tick={{ fontSize: 10 }} />
           <Tooltip />
-          <Bar dataKey="avg" name="Avg" fill="#6366f1" radius={[3, 3, 0, 0]} />
-          <Bar dataKey="min" name="Min" fill="#94a3b8" radius={[3, 3, 0, 0]} />
-          <Bar dataKey="max" name="Max" fill="#10b981" radius={[3, 3, 0, 0]} />
+          <Bar dataKey="avg" name="Avg" fill="#6366f1" radius={[3, 3, 0, 0]} isAnimationActive={!disableAnimation} />
+          <Bar dataKey="min" name="Min" fill="#94a3b8" radius={[3, 3, 0, 0]} isAnimationActive={!disableAnimation} />
+          <Bar dataKey="max" name="Max" fill="#10b981" radius={[3, 3, 0, 0]} isAnimationActive={!disableAnimation} />
           <Legend wrapperStyle={{ fontSize: 11 }} />
         </BarChart>
       </ResponsiveContainer>
@@ -133,7 +185,7 @@ function MetricCompare({ rows }) {
 }
 
 // ── Top-N R² bar chart ────────────────────────────────────────────────────────
-function TopR2Chart({ rows }) {
+function TopR2Chart({ rows, disableAnimation }) {
   const [topN, setTopN] = useState(20)
   const sorted = [...rows].sort((a, b) => (b.R2 ?? 0) - (a.R2 ?? 0))
   const topRows = sorted.slice(0, topN)
@@ -171,7 +223,7 @@ function TopR2Chart({ rows }) {
           <XAxis type="number" domain={[0, 1]} tickCount={6} tick={{ fontSize: 11 }} />
           <YAxis dataKey="name" type="category" width={130} tick={{ fontSize: 10 }} />
           <Tooltip formatter={(v) => v.toFixed(4)} labelStyle={{ fontSize: 12 }} />
-          <Bar dataKey="r2" radius={[0, 3, 3, 0]}>
+          <Bar dataKey="r2" radius={[0, 3, 3, 0]} isAnimationActive={!disableAnimation}>
             {data.map((d, i) => <Cell key={i} fill={d.col} />)}
           </Bar>
         </BarChart>
@@ -181,7 +233,7 @@ function TopR2Chart({ rows }) {
 }
 
 // ── Metric scatter plot ───────────────────────────────────────────────────────
-function MetricScatter({ rows, columns }) {
+function MetricScatter({ rows, columns, disableAnimation }) {
   const metricOptions = METRIC_COLS.filter((m) => columns?.includes(m))
   const [xAxis, setXAxis] = useState(metricOptions.find((m) => m === 'RMSE') ?? metricOptions[1] ?? metricOptions[0])
   const [yAxis, setYAxis] = useState(metricOptions.find((m) => m === 'R2') ?? metricOptions[0])
@@ -227,7 +279,7 @@ function MetricScatter({ rows, columns }) {
           <ZAxis range={[30, 30]} />
           <Tooltip cursor={{ strokeDasharray: '3 3' }} content={<ScatterTooltip xLabel={xAxis} yLabel={yAxis} />} />
           {series.map(({ cat, colour, data }) => (
-            <Scatter key={cat} name={cat} data={data} fill={colour} opacity={0.7} />
+            <Scatter key={cat} name={cat} data={data} fill={colour} opacity={0.7} isAnimationActive={!disableAnimation} />
           ))}
           {categories.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />}
         </ScatterChart>
@@ -427,7 +479,7 @@ function CorrelationHeatmap({ rows, columns }) {
 }
 
 // ── Category pie chart (model count per category) ─────────────────────────────
-function CategoryPie({ rows, breakdownCol }) {
+function CategoryPie({ rows, breakdownCol, disableAnimation }) {
   if (!breakdownCol) return null
 
   // Count models per category
@@ -453,6 +505,7 @@ function CategoryPie({ rows, breakdownCol }) {
             cx="50%"
             cy="50%"
             outerRadius={90}
+            isAnimationActive={!disableAnimation}
             label={({ name, percent }) => `${name} (${(percent * 100).toFixed(0)}%)`}
             labelLine={{ stroke: '#94a3b8' }}
             fontSize={11}
@@ -528,8 +581,91 @@ function CategoryPerfTable({ rows, breakdownCol }) {
   )
 }
 
+// ── Predicted vs Actual scatter plot ─────────────────────────────────────────
+export function PredictedActualChart({ predictions, disableAnimation = false }) {
+  const { actual, predicted, model_name } = predictions
+
+  // Pair up actual and predicted into scatter data points
+  const data = actual.map((a, i) => ({ actual: a, predicted: predicted[i] ?? 0 }))
+
+  // Overall range for the y=x reference line
+  const allVals = [...actual, ...predicted]
+  const minVal  = Math.min(...allVals)
+  const maxVal  = Math.max(...allVals)
+
+  // R² and RMSE computed client-side from the prediction pairs
+  const mean     = actual.reduce((s, v) => s + v, 0) / actual.length
+  const ssTot    = actual.reduce((s, v) => s + (v - mean) ** 2, 0)
+  const ssRes    = actual.reduce((s, v, i) => s + (v - (predicted[i] ?? 0)) ** 2, 0)
+  const r2       = ssTot === 0 ? 0 : 1 - ssRes / ssTot
+  const rmse     = Math.sqrt(ssRes / actual.length)
+
+  return (
+    <ChartCard
+      title="Predicted vs Actual"
+      subtitle={`Best model: ${model_name} — ${actual.length} test samples`}
+      filename={`pred_vs_actual_${model_name}`}
+    >
+      {/* Inline metric pills */}
+      <div className="flex gap-3 mb-2">
+        <span className="text-xs bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 rounded-full">
+          R² = {r2.toFixed(4)}
+        </span>
+        <span className="text-xs bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 px-2 py-0.5 rounded-full">
+          RMSE = {rmse.toFixed(4)}
+        </span>
+      </div>
+      <ResponsiveContainer width="100%" height={320}>
+        <ScatterChart margin={{ left: 16, right: 16, top: 8, bottom: 24 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+          <XAxis
+            dataKey="actual"
+            name="Actual"
+            type="number"
+            domain={[minVal, maxVal]}
+            tick={{ fontSize: 10 }}
+            label={{ value: 'Actual', position: 'insideBottom', offset: -12, fontSize: 11 }}
+          />
+          <YAxis
+            dataKey="predicted"
+            name="Predicted"
+            type="number"
+            domain={[minVal, maxVal]}
+            tick={{ fontSize: 10 }}
+            label={{ value: 'Predicted', angle: -90, position: 'insideLeft', fontSize: 11 }}
+          />
+          <ZAxis range={[30, 30]} />
+          <Tooltip
+            cursor={{ strokeDasharray: '3 3' }}
+            content={({ active, payload }) => {
+              if (!active || !payload?.length) return null
+              const d = payload[0]?.payload
+              return (
+                <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-2 text-xs shadow">
+                  <p className="text-gray-600 dark:text-gray-400">Actual: <span className="font-mono font-medium text-gray-800 dark:text-gray-200">{d?.actual?.toFixed(4)}</span></p>
+                  <p className="text-gray-600 dark:text-gray-400">Predicted: <span className="font-mono font-medium text-gray-800 dark:text-gray-200">{d?.predicted?.toFixed(4)}</span></p>
+                  <p className="text-gray-400">Error: <span className="font-mono">{(d?.predicted - d?.actual)?.toFixed(4)}</span></p>
+                </div>
+              )
+            }}
+          />
+          {/* Perfect-prediction y=x reference line */}
+          <ReferenceLine
+            segment={[{ x: minVal, y: minVal }, { x: maxVal, y: maxVal }]}
+            stroke="#6366f1"
+            strokeDasharray="4 3"
+            strokeWidth={1.5}
+            label={{ value: 'y=x', position: 'insideTopLeft', fontSize: 10, fill: '#6366f1' }}
+          />
+          <Scatter data={data} fill="#10b981" opacity={0.65} isAnimationActive={!disableAnimation} />
+        </ScatterChart>
+      </ResponsiveContainer>
+    </ChartCard>
+  )
+}
+
 // ── Root export ───────────────────────────────────────────────────────────────
-export default function ResultsCharts({ rows, columns }) {
+export default function ResultsCharts({ rows, columns, disableAnimation = false }) {
   if (!rows?.length) return null
 
   // Detect which categorical breakdown column is present
@@ -542,15 +678,15 @@ export default function ResultsCharts({ rows, columns }) {
     <div className="space-y-5">
       {/* First row: histogram + metric compare */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <R2Histogram rows={rows} />
-        <MetricCompare rows={rows} />
+        <R2Histogram rows={rows} disableAnimation={disableAnimation} />
+        <MetricCompare rows={rows} disableAnimation={disableAnimation} />
       </div>
 
       {/* Scatter plot — only useful with multiple models */}
-      {rows.length > 1 && <MetricScatter rows={rows} columns={columns} />}
+      {rows.length > 1 && <MetricScatter rows={rows} columns={columns} disableAnimation={disableAnimation} />}
 
       {/* Top-N bar chart */}
-      <TopR2Chart rows={rows} />
+      <TopR2Chart rows={rows} disableAnimation={disableAnimation} />
 
       {/* Correlation heatmap */}
       <CorrelationHeatmap rows={rows} columns={columns} />
@@ -558,7 +694,7 @@ export default function ResultsCharts({ rows, columns }) {
       {/* Category charts */}
       {breakdownCol && (
         <>
-          <CategoryPie rows={rows} breakdownCol={breakdownCol} />
+          <CategoryPie rows={rows} breakdownCol={breakdownCol} disableAnimation={disableAnimation} />
           <CategoryPerfTable rows={rows} breakdownCol={breakdownCol} />
         </>
       )}

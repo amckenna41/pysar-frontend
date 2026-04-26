@@ -21,6 +21,7 @@ import {
 } from 'recharts'
 import toast from 'react-hot-toast'
 import { uploadDataset, loadExampleDataset, getExampleDatasets, deduplicateDataset, fixMissingSequences, fixMissingActivity, fixOutliers } from '../utils/api'
+import { formatApiError } from '../utils/errorHandling'
 import { useAppStore } from '../store/appStore'
 import DatasetPreview from '../components/DatasetPreview'
 
@@ -88,10 +89,11 @@ function AffectedRowsTable({ rows, columns, label }) {
 }
 
 export default function Step1Upload() {
-  const { dataset, setDataset, setStep } = useAppStore()
+  const { dataset, setDataset, clearDataset, setStep } = useAppStore()
 
   const [uploading, setUploading]       = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
+  const [uploadProcessing, setUploadProcessing] = useState(false) // true after bytes sent, waiting for server
   const [error, setError]               = useState(null)
   const [logTransform, setLogTransform] = useState(false)      // activity histogram toggle
   const [showSamples, setShowSamples]   = useState(false)      // sample dataset panel
@@ -121,21 +123,35 @@ export default function Step1Upload() {
         return
       }
       if (accepted.length === 0) return
+      // Reject files over 10 MB before sending to the server
+      const MAX_BYTES = 10 * 1024 * 1024
+      if (accepted[0].size > MAX_BYTES) {
+        setError('File too large. Maximum upload size is 10 MB.')
+        toast.error('File too large. Maximum upload size is 10 MB.')
+        return
+      }
       setError(null)
       setUploading(true)
       setUploadProgress(0)
+      setUploadProcessing(false)
       try {
-        const result = await uploadDataset(accepted[0], setUploadProgress)
+        // Track when bytes finish uploading so we can show a "Processing…" phase
+        const onProgress = (pct) => {
+          setUploadProgress(pct)
+          if (pct >= 100) setUploadProcessing(true)
+        }
+        const result = await uploadDataset(accepted[0], onProgress)
         setDataset({ ...result, seq_col: result.seq_col_guess, act_col: result.act_col_guess })
         setOriginalDataset(null) // clear any prior fix snapshot on new upload
         setLogTransform(false)
         toast.success(`Loaded ${result.num_rows} sequences from ${result.filename}`)
       } catch (err) {
-        const msg = err?.response?.data?.detail ?? err.message ?? 'Upload failed'
+        const msg = formatApiError(err) || 'Upload failed'
         setError(msg)
         toast.error(msg)
       } finally {
         setUploading(false)
+        setUploadProcessing(false)
       }
     },
     [setDataset],
@@ -168,12 +184,24 @@ export default function Step1Upload() {
   // ── Lazy-upload helper ─────────────────────────────────────────────────────
   // Datasets loaded via example datasets are parsed client-side (_pendingFile set,
   // file_path null). Before any fix that needs a server-side file_id, upload first.
+  // _pendingFile may have been serialised to {} by Zustand persist — fall back to
+  // _pendingFileText (a plain string) which survives JSON serialisation.
   async function ensureUploaded(current) {
-    if (!current?.file_path && current?._pendingFile) {
-      const uploaded = await uploadDataset(current._pendingFile)
-      const merged = { ...current, file_id: uploaded.file_id, file_path: uploaded.file_path, _pendingFile: null }
-      setDataset(merged)
-      return merged
+    if (!current?.file_path) {
+      let fileToUpload = current._pendingFile instanceof File ? current._pendingFile : null
+      if (!fileToUpload && current._pendingFileText) {
+        fileToUpload = new File(
+          [current._pendingFileText],
+          current._pendingFileName ?? 'dataset.txt',
+          { type: 'text/plain' },
+        )
+      }
+      if (fileToUpload) {
+        const uploaded = await uploadDataset(fileToUpload)
+        const merged = { ...current, file_id: uploaded.file_id, file_path: uploaded.file_path, _pendingFile: null }
+        setDataset(merged)
+        return merged
+      }
     }
     return current
   }
@@ -290,21 +318,23 @@ export default function Step1Upload() {
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80 rounded-xl">
             <div className="w-48 h-1.5 bg-gray-200 rounded-full overflow-hidden">
               <div
-                className="h-full bg-indigo-600 transition-all duration-200"
-                style={{ width: `${uploadProgress}%` }}
+                className={`h-full transition-all duration-200 ${uploadProcessing ? 'bg-indigo-400 animate-pulse' : 'bg-indigo-600'}`}
+                style={{ width: uploadProcessing ? '100%' : `${uploadProgress}%` }}
               />
             </div>
-            <p className="mt-2 text-sm text-gray-500">Uploading… {uploadProgress}%</p>
+            <p className="mt-2 text-sm text-gray-500">
+              {uploadProcessing ? 'Processing…' : `Uploading… ${uploadProgress}%`}
+            </p>
           </div>
         )}
 
-        {/* Clear dataset button */}
+        {/* Clear dataset button — also resets config and encoding to defaults */}
         {dataset && !uploading && (
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); setDataset(null) }}
+            onClick={(e) => { e.stopPropagation(); clearDataset() }}
             className="absolute top-3 right-3 p-1 rounded-full bg-red-100 hover:bg-red-200 text-red-600 transition-colors"
-            title="Remove dataset"
+            title="Remove dataset and reset all parameters"
           >
             <XMarkIcon className="w-4 h-4" />
           </button>
@@ -327,6 +357,9 @@ export default function Step1Upload() {
             </p>
             <p className="text-xs text-gray-400 mt-3">
               File must contain a protein sequence column and a numeric activity column
+            </p>
+            <p className="text-xs text-gray-400 mt-1">
+              Max file size: 10 MB
             </p>
           </>
         )}

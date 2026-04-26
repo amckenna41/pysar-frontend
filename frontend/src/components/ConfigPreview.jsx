@@ -45,6 +45,50 @@ const CONFIG_TEMPLATES = [
     desc: 'Ridge regression with 5-fold cross-validation, seed 42',
     config: { ...DEFAULT_CONFIG, model: { ...DEFAULT_CONFIG.model, algorithm: 'ridge', parameters: { alpha: 1.0 }, use_cv: true, cv_folds: 5, random_state: 42 } },
   },
+  {
+    name: 'SVR (RBF kernel)',
+    desc: 'Support Vector Regression with RBF kernel, 80/20 split',
+    config: { ...DEFAULT_CONFIG, model: { ...DEFAULT_CONFIG.model, algorithm: 'svr', parameters: { kernel: 'rbf', C: 1.0, epsilon: 0.1 } } },
+  },
+  {
+    name: 'Gradient Boosting',
+    desc: 'Gradient Boosting, 200 estimators, 10% holdout',
+    config: { ...DEFAULT_CONFIG, model: { ...DEFAULT_CONFIG.model, algorithm: 'gradientboosting', test_split: 0.1, parameters: { n_estimators: 200, learning_rate: 0.1, max_depth: 3 } } },
+  },
+  {
+    name: 'Elastic Net',
+    desc: 'Elastic Net with balanced L1/L2 regularisation',
+    config: { ...DEFAULT_CONFIG, model: { ...DEFAULT_CONFIG.model, algorithm: 'elasticnet', parameters: { alpha: 0.5, l1_ratio: 0.5 } } },
+  },
+  {
+    name: 'k-NN Regressor',
+    desc: 'k-Nearest Neighbours, k=5, uniform weights',
+    config: { ...DEFAULT_CONFIG, model: { ...DEFAULT_CONFIG.model, algorithm: 'knn', parameters: { n_neighbors: 5, weights: 'uniform', metric: 'euclidean' } } },
+  },
+  {
+    name: 'LASSO (sparse)',
+    desc: 'LASSO regression for sparse feature selection',
+    config: { ...DEFAULT_CONFIG, model: { ...DEFAULT_CONFIG.model, algorithm: 'lasso', parameters: { alpha: 0.1 } } },
+  },
+  {
+    name: 'DSP + Random Forest',
+    desc: 'Random Forest with Absolute spectrum + Blackman window DSP',
+    config: {
+      ...DEFAULT_CONFIG,
+      model: { ...DEFAULT_CONFIG.model, algorithm: 'randomforest', parameters: { n_estimators: 200, max_depth: 10 } },
+      pyDSP: { ...DEFAULT_CONFIG.pyDSP, use_dsp: true, spectrum: 'absolute', window: { ...DEFAULT_CONFIG.pyDSP.window, type: 'blackman' } },
+    },
+  },
+  {
+    name: 'HGBR + CV',
+    desc: 'Hist Gradient Boosting with 10-fold CV, reproducible seed',
+    config: { ...DEFAULT_CONFIG, model: { ...DEFAULT_CONFIG.model, algorithm: 'hgbr', parameters: { max_iter: 200, learning_rate: 0.05 }, use_cv: true, cv_folds: 10, random_state: 0 } },
+  },
+  {
+    name: 'Strict Holdout',
+    desc: 'Ridge regression with 30% test holdout for small datasets',
+    config: { ...DEFAULT_CONFIG, model: { ...DEFAULT_CONFIG.model, algorithm: 'ridge', test_split: 0.3, parameters: { alpha: 1.0 } } },
+  },
 ]
 
 // Recursively diff current vs defaults — returns [{path, current, default}]

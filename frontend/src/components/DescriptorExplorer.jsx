@@ -12,6 +12,7 @@ import {
 } from '@heroicons/react/24/outline'
 import { getDescriptors } from '../utils/api'
 import { useAppStore } from '../store/appStore'
+import { DESCRIPTORS as DESCRIPTOR_DEFS } from './DescriptorConfig'
 
 // ── Category colour badges ────────────────────────────────────────────────────
 const CATEGORY_COLOURS = {
@@ -106,11 +107,29 @@ export default function DescriptorExplorer() {
   const [retryCount, setRetryCount]   = useState(0)
   const [search, setSearch]           = useState('')
   const [selectedCat, setSelectedCat] = useState('All')
+  const [sortMode, setSortMode]        = useState('default') // 'default' | 'features' | 'category'
   // expandedSet is stored globally so it persists when the panel is closed/reopened
 
   // Read and update the encoding selection from global store
-  const { encoding, setEncoding, descriptorExpandedSet, toggleDescriptorExpanded, setDescriptorExpandedBatch } = useAppStore()
+  const { encoding, setEncoding, config, dataset, descriptorExpandedSet, toggleDescriptorExpanded, setDescriptorExpandedBatch } = useAppStore()
   const selectedDescriptors = encoding.selected_descriptors ?? []
+
+  // Param lookup built from DescriptorConfig definitions
+  const descParamsMap = useMemo(() => Object.fromEntries(DESCRIPTOR_DEFS.map((d) => [d.key, d.params])), [])
+
+  // Encoding time estimation based on selected feature count × dataset rows
+  const encodingComplexity = useMemo(() => {
+    if (selectedDescriptors.length === 0) return null
+    const totalFeatures = selectedDescriptors.reduce((sum, name) => {
+      const d = descriptors.find((x) => x.name === name)
+      return sum + (d?.feature_count ?? 0)
+    }, 0)
+    const numRows = dataset?.num_rows ?? 100
+    const score = totalFeatures * numRows
+    if (score < 5000)  return { label: 'Fast',     colour: 'bg-green-100 text-green-700' }
+    if (score < 50000) return { label: 'Moderate',  colour: 'bg-amber-100 text-amber-700' }
+    return                   { label: 'Slow',      colour: 'bg-red-100 text-red-700' }
+  }, [selectedDescriptors, dataset, descriptors])
 
   // Toggle a descriptor name in/out of the selection
   function toggleDescriptor(name, e) {
@@ -123,6 +142,19 @@ export default function DescriptorExplorer() {
 
   // Add all currently visible descriptors to the selection
   function selectAllVisible() {
+    const names = filtered.map((d) => d.name)
+    const merged = Array.from(new Set([...selectedDescriptors, ...names]))
+    setEncoding({ selected_descriptors: merged })
+  }
+
+  // Remove all currently visible descriptors from the selection
+  function deselectAllVisible() {
+    const names = new Set(filtered.map((d) => d.name))
+    setEncoding({ selected_descriptors: selectedDescriptors.filter((n) => !names.has(n)) })
+  }
+
+  // Select all descriptors in the active category filter
+  function selectAllInCategory() {
     const names = filtered.map((d) => d.name)
     const merged = Array.from(new Set([...selectedDescriptors, ...names]))
     setEncoding({ selected_descriptors: merged })
@@ -154,7 +186,7 @@ export default function DescriptorExplorer() {
   // Filtered descriptor list
   const filtered = useMemo(() => {
     const q = search.toLowerCase()
-    return descriptors.filter((d) => {
+    const list = descriptors.filter((d) => {
       const matchSearch = !q
         || d.name.toLowerCase().includes(q)
         || d.label.toLowerCase().includes(q)
@@ -163,7 +195,17 @@ export default function DescriptorExplorer() {
       const matchCat = selectedCat === 'All' || d.category === selectedCat
       return matchSearch && matchCat
     })
-  }, [descriptors, search, selectedCat])
+    // Sort by selected mode
+    if (sortMode === 'features')  return [...list].sort((a, b) => b.feature_count - a.feature_count)
+    if (sortMode === 'category')  return [...list].sort((a, b) => a.category.localeCompare(b.category))
+    return list
+  }, [descriptors, search, selectedCat, sortMode])
+
+  // Collapse all cards when filter/search changes
+  useEffect(() => {
+    setDescriptorExpandedBatch(filtered.map((d) => d.name), false)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, selectedCat])
 
   // Category breakdown: total features per category, sorted descending
   const categoryBreakdown = useMemo(() => {
@@ -209,6 +251,12 @@ export default function DescriptorExplorer() {
               {selectedDescriptors.length} {selectedDescriptors.length === 1 ? 'descriptor' : 'descriptors'} selected
             </span>
             <span className="text-indigo-500 text-xs">— will be used in Step 3 encoding</span>
+            {/* Encoding time estimate */}
+            {encodingComplexity && (
+              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${encodingComplexity.colour}`}>
+                {encodingComplexity.label} encoding
+              </span>
+            )}
           </div>
           <button
             onClick={clearSelection}
@@ -287,6 +335,38 @@ export default function DescriptorExplorer() {
               : <><ChevronDownIcon className="w-3.5 h-3.5" /> Expand all</>}
           </button>
         )}
+        {/* Sort by feature count / category */}
+        {!loading && filtered.length > 0 && (
+          <button
+            onClick={() => setSortMode((m) => m === 'default' ? 'features' : m === 'features' ? 'category' : 'default')}
+            className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap ${
+              sortMode !== 'default'
+                ? 'border-indigo-400 bg-indigo-50 text-indigo-700'
+                : 'border-gray-200 bg-white text-gray-600 hover:border-indigo-400 hover:text-indigo-700'
+            }`}
+          >
+            <ChevronDownIcon className="w-3.5 h-3.5" />
+            {sortMode === 'features' ? 'Sort: features ↓' : sortMode === 'category' ? 'Sort: category' : 'Sort: default'}
+          </button>
+        )}
+        {/* Select all in category (only when a category is active) */}
+        {!loading && filtered.length > 0 && selectedCat !== 'All' && (
+          <button
+            onClick={selectAllInCategory}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-200 text-xs font-medium text-gray-600 hover:border-indigo-400 hover:text-indigo-700 bg-white transition-colors whitespace-nowrap"
+          >
+            <PlusIcon className="w-3.5 h-3.5" /> Select all in category
+          </button>
+        )}
+        {/* Deselect all visible */}
+        {!loading && selectedDescriptors.length > 0 && (
+          <button
+            onClick={deselectAllVisible}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-200 text-xs font-medium text-gray-600 hover:border-red-400 hover:text-red-600 bg-white transition-colors whitespace-nowrap"
+          >
+            <XMarkIcon className="w-3.5 h-3.5" /> Deselect visible
+          </button>
+        )}
       </div>
 
       {/* Results count */}
@@ -319,8 +399,14 @@ export default function DescriptorExplorer() {
             const isSelected = selectedDescriptors.includes(desc.name)
             return (
               <div key={desc.name} className={`card border-2 transition-colors ${isSelected ? 'border-indigo-300 bg-indigo-50/30' : 'border-transparent'}`}>
-                {/* Row header */}
-                <div className="flex items-center gap-3 p-4">
+                {/* Row header — clicking anywhere toggles the expanded detail panel */}
+                <div
+                  className="flex items-center gap-3 p-4 cursor-pointer"
+                  onClick={() => toggleExpand(desc.name)}
+                  role="button"
+                  aria-expanded={isExpanded}
+                  aria-label={isExpanded ? `Collapse ${desc.label}` : `Expand ${desc.label}`}
+                >
                   <div className="flex-1 min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-semibold text-sm text-gray-800">{desc.label}</span>
@@ -359,15 +445,10 @@ export default function DescriptorExplorer() {
                       : <><PlusIcon className="w-3 h-3" /> Use</>}
                   </button>
 
-                  {/* Expand toggle */}
-                  <button
-                    onClick={() => toggleExpand(desc.name)}
-                    aria-expanded={isExpanded}
-                    aria-label={isExpanded ? `Collapse ${desc.label}` : `Expand ${desc.label}`}
-                    className="text-xs text-gray-400 hover:text-gray-600 font-medium px-2 py-1 rounded hover:bg-gray-100 shrink-0"
-                  >
-                    {isExpanded ? 'Less ▲' : 'More ▼'}
-                  </button>
+                  {/* Expand toggle — visual chevron only; click is handled by the row */}
+                  <span className="text-gray-400 shrink-0" aria-hidden="true">
+                    {isExpanded ? <ChevronUpIcon className="w-4 h-4" /> : <ChevronDownIcon className="w-4 h-4" />}
+                  </span>
                 </div>
 
                 {/* Expanded detail panel */}
@@ -399,9 +480,28 @@ export default function DescriptorExplorer() {
                       </div>
                     </div>
                     {desc.configurable && (
-                      <p className="text-xs text-indigo-600 bg-indigo-50 rounded px-3 py-2">
-                        This descriptor has configurable metaparameters — adjust them in Step 2 → Descriptors tab before running.
-                      </p>
+                      <div className="text-xs bg-indigo-50 rounded px-3 py-2 space-y-1.5">
+                        <p className="text-indigo-700 font-semibold">Configurable parameters</p>
+                        {(() => {
+                          const params = descParamsMap[desc.name]
+                          const current = config?.descriptors?.[desc.name] ?? {}
+                          if (!params || params.length === 0) {
+                            return <p className="text-indigo-500">Adjust in Step 2 → Descriptors tab before running.</p>
+                          }
+                          return (
+                            <div className="flex flex-wrap gap-3">
+                              {params.map((p) => (
+                                <div key={p.key} className="flex flex-col gap-0.5">
+                                  <span className="font-mono text-gray-500">{p.key}</span>
+                                  <span className="font-mono font-semibold text-indigo-700">
+                                    {current[p.key] !== undefined ? String(current[p.key]) : String(p.default)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )
+                        })()}
+                      </div>
                     )}
                     {/* Amino acid property heatmap — shown when per-AA reference values are available */}
                     {desc.aa_values && (

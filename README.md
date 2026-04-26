@@ -9,13 +9,15 @@ Interactive React + FastAPI interface for the [pySAR](https://github.com/amckenn
 
 ## Features
 
-- **Dataset upload** — drag-and-drop `.txt` / `.csv` / `.tsv` datasets with live preview, column auto-detection, and sequence-length statistics
-- **Parameter configuration** — full GUI for Model, Descriptor, and DSP settings mapped directly to `pySAR` config options
-- **Encoding wizard** — choose from AAI, Descriptor, or combined AAI+Descriptor strategies with all tuning knobs exposed
-- **Live job monitoring** — real-time log stream and status tracking while encoding runs in the background
-- **Results dashboard** — sortable/filterable results table, CSV export, and Recharts visualisations (R² bar chart, histogram, category breakdown, metric comparison)
-- **Config history** — save and reload configurations from browser localStorage
-- **Dark mode** — toggle in the sidebar
+- **Dataset upload** — drag-and-drop `.txt` / `.csv` / `.tsv` datasets with live preview, column auto-detection, sequence validation, and activity distribution histogram. Four built-in example datasets load entirely client-side (no backend required).
+- **Parameter configuration** — full GUI for Model, Descriptor, and DSP settings mapped directly to `pySAR` config options. Import/export configs as JSON with structural validation and deep-merge against defaults. An amber diff badge shows how many settings differ from the defaults.
+- **Encoding wizard** — choose from AAI, Descriptor, or combined AAI+Descriptor strategies with all tuning knobs exposed. Train/test split counts are previewed before submission.
+- **Live job monitoring** — real-time log stream, progress bar with `~X / Y models evaluated` count and `~Z remaining` ETA while encoding runs in the background. The status poller uses exponential backoff (2 s → 30 s cap) to reduce server traffic during long-running jobs. Clicking **Stop** immediately terminates the encoding subprocess on the backend (no wait for the next checkpoint).
+- **Results dashboard** — sortable/filterable results table, Recharts visualisations (R² bar chart, histogram, category breakdown, metric comparison, predicted vs actual scatter plot), and one-click export as CSV, Excel, JSON, or **PDF report** (customisable via a modal: choose top-N or all results, optionally include charts and/or a full-config appendix).
+- **Job history & comparison** — full job history panel with search, filter, and bulk-delete. Select two jobs to view a side-by-side grouped bar chart of their top-10 R² values and a parameter diff table.
+- **Config history** — save and reload configurations from browser localStorage.
+- **Session persistence** — current step, dataset metadata, configuration, encoding parameters, and AAI index cache all survive a page refresh via Zustand `persist` middleware (localStorage). Results and transient UI state are excluded.
+- **Dark mode** — toggle in the sidebar; preference is restored automatically after a page refresh.
 
 ## Prerequisites
 
@@ -84,19 +86,19 @@ pySAR_frontend/
         │   └── errorHandling.js      Error formatting helpers
         ├── components/               Shared / reusable components
         │   ├── AaiExplorer.jsx       AAIndex1 catalogue browser with category filter
-        │   ├── ConfigPreview.jsx     Live JSON config preview panel
+        │   ├── ConfigPreview.jsx     Live JSON config preview panel with diff badge
         │   ├── DatasetPreview.jsx    Dataset table with stats and validation warnings
         │   ├── DescriptorConfig.jsx  Descriptor selection and metaparameter form
         │   ├── DescriptorExplorer.jsx Descriptor catalogue browser with heatmap
         │   ├── DSPConfig.jsx         DSP (signal processing) parameters form
         │   ├── ErrorBoundary.jsx     React error boundary with retry
         │   ├── HowToModal.jsx        Four-step tutorial modal
-        │   ├── JobsPanel.jsx         Job history with search, filter, sort, and CSV export
+        │   ├── JobsPanel.jsx         Job history with search, filter, sort, compare, and CSV export
         │   ├── LandingPage.jsx       Animated homepage
         │   ├── Layout.jsx            App shell — sidebar, dark mode, nav
         │   ├── ModelConfig.jsx       ML model selection and hyperparameter form
         │   ├── ModelExplorer.jsx     Model reference browser
-        │   ├── ResultsCharts.jsx     R² charts, histogram, and metric comparison
+        │   ├── ResultsCharts.jsx     R² charts, histogram, metric comparison, predicted vs actual scatter
         │   └── Skeleton.jsx          Shimmer loading placeholders
         └── steps/                    Wizard step pages
             ├── Step1Upload.jsx
@@ -181,6 +183,83 @@ Encodes sequences using sequence-derived feature descriptors computed by the [pr
 
 ### AAI + Descriptor (combined)
 Concatenates the AAI-encoded feature vector with a descriptor feature vector for each sequence, producing a richer combined representation. Useful for exploring whether combining physicochemical signals with compositional features improves model performance.
+
+---
+
+## Testing
+
+The project has three layers of tests that run automatically in CI on every push and pull request.
+
+### Backend — pytest
+
+Unit and integration tests using `starlette.TestClient` with pySAR/aaindex pre-mocked so no real encoding occurs.
+
+```bash
+# from repo root
+pip install pytest pytest-cov httpx
+pytest                          # run all tests
+pytest -m unit                  # unit tests only
+pytest -m integration           # integration tests only
+pytest --cov=backend --cov-report=html   # with HTML coverage report
+```
+
+| File | What it tests |
+|---|---|
+| `tests/backend/test_helpers.py` | All 11 pure Python helper functions (dataset reading, validation, stats, config building) |
+| `tests/backend/test_api_upload.py` | All upload + dataset remediation endpoints |
+| `tests/backend/test_api_encode.py` | Full job lifecycle — submit, poll, cancel (including subprocess termination), delete |
+| `tests/backend/test_api_misc.py` | Health, AAI indices, descriptors, version, example datasets |
+| `tests/backend/test_rate_limiting.py` | Sliding-window rate limiting middleware (429 + `Retry-After`) |
+
+### Frontend — Vitest
+
+Unit tests run in a jsdom environment with `@testing-library/react`.
+
+```bash
+cd frontend
+npm test                    # single run
+npm run test:watch          # watch mode
+npm run test:coverage       # with v8 coverage report
+```
+
+| File | What it tests |
+|---|---|
+| `src/__tests__/unit/parseDataset.test.js` | `parseDatasetClientSide` — CSV/TSV parsing, column guessing, stats, validation |
+| `src/__tests__/unit/appStore.test.js` | Zustand store — all actions, localStorage persistence, caps |
+| `src/__tests__/unit/errorHandling.test.js` | `formatApiError` and `toastApiError` — all HTTP error branches |
+| `src/__tests__/unit/configValidation.test.js` | `validateConfig` and `countDiffs` — all validation paths |
+| `src/__tests__/unit/encoding.test.js` | `logLineClass` and `estimateModels` — all three strategies |
+| `src/__tests__/unit/api.test.js` | All nine `api.js` exports with axios mocked |
+
+### E2E — Playwright
+
+End-to-end tests run in a real Chromium browser against the Vite dev server. Backend encode routes are intercepted via `page.route()` so no real encoding occurs.
+
+```bash
+# Install browsers (once)
+npx playwright install chromium
+
+# Run E2E tests (starts Vite dev server automatically)
+npm run test:e2e
+
+# Run with UI mode for debugging
+npx playwright test --ui
+```
+
+The backend must be running locally for the upload tests:
+
+```bash
+uvicorn backend.main:app --port 8000 &
+npm run test:e2e
+```
+
+| File | What it tests |
+|---|---|
+| `tests/e2e/landing.spec.js` | Landing page renders, CTA navigates to Step 1 |
+| `tests/e2e/upload.spec.js` | File upload, validation warnings, example dataset loading, Next button gating |
+| `tests/e2e/configure.spec.js` | Tab navigation, algorithm selector, config diff badge, Back button |
+| `tests/e2e/encode.spec.js` | Strategy selection, job submission flow, log panel, progress (mocked backend) |
+| `tests/e2e/results.spec.js` | Results table, filter, sort, export buttons, chart rendering (mocked backend) |
 
 ---
 

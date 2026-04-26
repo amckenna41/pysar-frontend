@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { logLineClass, estimateModels, snakeToTitle } from '../utils/encoding'
 import {
   BoltIcon,
   TagIcon,
@@ -20,6 +21,7 @@ import {
 import toast from 'react-hot-toast'
 import { useAppStore } from '../store/appStore'
 import { startEncoding, getJob, getAaiIndicesFull, cancelJob, getDescriptors, uploadDataset, checkBackend } from '../utils/api'
+import { toastApiError } from '../utils/errorHandling'
 
 // ── Descriptor names loaded from backend (pySAR v2.5.1) ──────────────────────
 // Falls back to empty array until the fetch resolves; shown in the multi-select grid
@@ -57,40 +59,6 @@ const STRATEGIES = [
   },
 ]
 
-// ── Log line severity → CSS colour class ─────────────────────────────────────
-function logLineClass(line) {
-  if (/^ERROR/i.test(line)) return 'text-red-400'
-  if (/^WARNING|^Cancelled/i.test(line)) return 'text-amber-400'
-  if (/^Complete/i.test(line)) return 'text-emerald-400'
-  if (/^Strategy:|^Dataset loaded/i.test(line)) return 'text-sky-300'
-  return 'text-gray-300'
-}
-
-// ── Client-side model count estimator (mirrors backend _estimate_total_models) ─
-function estimateModels(strategy, aaiIndices, selectedDescs, descCombo, maxModels) {
-  function comb(n, k) {
-    if (k > n || k < 0) return 0
-    if (k === 0 || k === n) return 1
-    let r = 1
-    for (let i = 0; i < k; i++) r = (r * (n - i)) / (i + 1)
-    return Math.round(r)
-  }
-  const nAai = aaiIndices?.length || 566
-  const nDesc = selectedDescs?.length || 12
-  const combo = Math.max(1, descCombo || 1)
-  let n = 0
-  if (strategy === 'aai') {
-    n = nAai
-  } else if (strategy === 'descriptor') {
-    for (let k = 1; k <= combo; k++) n += comb(nDesc, k)
-  } else if (strategy === 'aai_descriptor') {
-    let dCombos = 0
-    for (let k = 1; k <= combo; k++) dCombos += comb(nDesc, k)
-    n = nAai * dCombos
-  }
-  if (maxModels) n = Math.min(n, parseInt(maxModels, 10) || n)
-  return n
-}
 
 export default function Step3Encode() {
   const {
@@ -105,10 +73,8 @@ export default function Step3Encode() {
   // ── Existing state ────────────────────────────────────────────────────────
   // selectedAaiIndices is derived from the store so AaiExplorer selections sync here
   const selectedAaiIndices = encoding.aai_indices ?? []
-  // Two-state debounce: input shows immediately, filter waits 250 ms
   const [aaiSearch, setAaiSearch] = useState('')
   const [aaiSearchDebounced, setAaiSearchDebounced] = useState('')
-  const aaiDebounceRef = useRef(null)
   const [aaiDropdownOpen, setAaiDropdownOpen] = useState(false)
   const [allAaiRecords, setAllAaiRecords] = useState([])
   // Descriptor names fetched from backend rather than hardcoded
@@ -149,6 +115,12 @@ export default function Step3Encode() {
     }).catch(() => {})
   }, [encoding.strategy])
 
+  // ── Debounce aaiSearch → aaiSearchDebounced (150 ms) ─────────────────────
+  useEffect(() => {
+    const timer = setTimeout(() => setAaiSearchDebounced(aaiSearch), 150)
+    return () => clearTimeout(timer)
+  }, [aaiSearch])
+
   // ── code → title lookup map ───────────────────────────────────────────────
   const aaiIndexMap = useMemo(() => {
     const map = {}
@@ -156,21 +128,19 @@ export default function Step3Encode() {
     return map
   }, [allAaiRecords])
 
-  // ── Filtered suggestions (exclude already selected, search code + title) ──
-  // Uses debounced value so rapid typing doesn't re-filter on every keystroke
+  // ── Filtered suggestions (exclude already selected, prefix-match on code, contains on title) ──
+  const aaiSearchLower = aaiSearchDebounced.toLowerCase()
   const filteredAaiIndices = allAaiRecords.filter(
     ({ code, title }) =>
       !selectedAaiIndices.includes(code) &&
-      (code.toLowerCase().includes(aaiSearchDebounced.toLowerCase()) ||
-       (title ?? '').toLowerCase().includes(aaiSearchDebounced.toLowerCase()))
+      (code.toLowerCase().startsWith(aaiSearchLower) ||
+       (aaiSearchLower.length > 1 && (title ?? '').toLowerCase().includes(aaiSearchLower)))
   )
 
   // ── Chip add/remove helpers — update store so AaiExplorer stays in sync ─────
   function addAaiIndex(code) {
     setEncoding({ aai_indices: [...selectedAaiIndices, code] })
     setAaiSearch('')
-    setAaiSearchDebounced('')
-    clearTimeout(aaiDebounceRef.current)
     setAaiDropdownOpen(false)
   }
 
@@ -216,12 +186,15 @@ export default function Step3Encode() {
 
   // ── Dry-run model + time estimate ─────────────────────────────────────────
   const dryRunEstimate = useMemo(() => {
+    // Pass live descriptor catalogue count for an accurate model estimate
+    const descCount = allDescriptorKeys.length || 33
     const models = estimateModels(
       encoding.strategy,
       selectedAaiIndices.length ? selectedAaiIndices : null,
       encoding.selected_descriptors?.length ? encoding.selected_descriptors : null,
       encoding.desc_combo,
       encoding.max_models,
+      descCount,
     )
     const secsPerModel = 0.5 / Math.max(1, encoding.n_jobs)
     return { models, estimatedSecs: Math.round(models * secsPerModel) }
@@ -276,7 +249,7 @@ export default function Step3Encode() {
         setElapsed(0)
         toast.success('Rerun submitted — encoding in progress…')
       } catch (err) {
-        toast.error(err?.response?.data?.detail ?? 'Failed to start rerun')
+        toastApiError(err, 'Failed to start rerun')
       }
     })()
   }, [pendingRerun, dataset])
@@ -288,25 +261,36 @@ export default function Step3Encode() {
     return () => clearInterval(iv)
   }, [startTs, job?.status])
 
-  // ── Job polling ───────────────────────────────────────────────────────────
+  // ── Job polling with exponential backoff ─────────────────────────────────
   useEffect(() => {
     if (!job?.job_id || job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') return
+    let cancelled = false
     let consecutiveErrors = 0
-    const MAX_ERRORS = 5 // ~10s of failed polls before giving up
-    const iv = setInterval(async () => {
+    const MAX_ERRORS = 5
+    const MIN_INTERVAL = 2000   // 2 s initial poll
+    const MAX_INTERVAL = 30000  // 30 s cap for long-running jobs
+    let currentInterval = MIN_INTERVAL
+    let timerId = null
+
+    async function poll() {
+      if (cancelled) return
       try {
         const data = await getJob(job.job_id)
-        consecutiveErrors = 0 // reset on success
+        if (cancelled) return
+        consecutiveErrors = 0
+        currentInterval = MIN_INTERVAL  // reset backoff on successful response
         updateJob(data)
         if (data.status === 'completed') {
-          // Store best R², timestamp and duration in history entry
+          // Store best R², R² summary (top 30) and duration in history entry
           const best_r2 = data.results?.[0]?.R2 ?? null
-          updateJobHistoryStatus(job.job_id, { status: 'completed', best_r2, completed_at: new Date().toISOString(), duration_ms: startTs ? Date.now() - startTs : null })
+          const result_summary = (data.results ?? []).slice(0, 30).map((r) => r.R2).filter((v) => typeof v === 'number')
+          updateJobHistoryStatus(job.job_id, { status: 'completed', best_r2, result_summary, completed_at: new Date().toISOString(), duration_ms: startTs ? Date.now() - startTs : null })
           setResults(data.results, data.columns)
           toast.success(`Encoding complete — ${data.results?.length} models evaluated`)
           // Auto-start next queued job if any
           const { encodingQueue: q, shiftQueue: sq } = useAppStore.getState()
           if (q.length > 0) { const next = q[0]; sq(); setTimeout(() => _submitPayload(next), 300) }
+          return  // stop polling
         }
         if (data.status === 'failed') {
           // Persist error message, log, timestamp and duration
@@ -315,22 +299,31 @@ export default function Step3Encode() {
           // Still advance the queue on failure
           const { encodingQueue: q, shiftQueue: sq } = useAppStore.getState()
           if (q.length > 0) { const next = q[0]; sq(); setTimeout(() => _submitPayload(next), 300) }
+          return  // stop polling
         }
         if (data.status === 'cancelled') {
           updateJobHistoryStatus(job.job_id, 'cancelled')
+          return  // stop polling
         }
       } catch {
-        // Count consecutive network errors; stop polling if backend is unreachable
+        if (cancelled) return
         consecutiveErrors++
+        // Double the interval on each network error, up to MAX_INTERVAL
+        currentInterval = Math.min(currentInterval * 2, MAX_INTERVAL)
         if (consecutiveErrors >= MAX_ERRORS) {
           updateJob({ status: 'failed', error: 'Backend unreachable — connection lost' })
           updateJobHistoryStatus(job.job_id, { status: 'failed', error: 'Backend unreachable', completed_at: new Date().toISOString(), duration_ms: startTs ? Date.now() - startTs : null })
           toast.error('Lost connection to backend — job marked as failed')
-          clearInterval(iv)
+          return  // stop polling
         }
       }
-    }, 2000)
-    return () => clearInterval(iv)
+      if (!cancelled) {
+        timerId = setTimeout(poll, currentInterval)
+      }
+    }
+
+    timerId = setTimeout(poll, currentInterval)
+    return () => { cancelled = true; if (timerId) clearTimeout(timerId) }
   }, [job?.job_id, job?.status])
 
   // ── Internal: submit a payload as a new job ───────────────────────────────
@@ -351,7 +344,7 @@ export default function Step3Encode() {
       setStartTs(Date.now())
       setElapsed(0)
     } catch (err) {
-      toast.error(err?.response?.data?.detail ?? 'Failed to start job')
+      toastApiError(err, 'Failed to start job')
     }
   }
 
@@ -379,6 +372,8 @@ export default function Step3Encode() {
       max_models:           encoding.max_models ? parseInt(encoding.max_models, 10) : null,
       sample_mode:          encoding.sample_mode,
       random_state:         encoding.random_state ? parseInt(encoding.random_state, 10) : null,
+      use_cv:               config.model.use_cv ?? false,
+      cv_folds:             config.model.cv_folds ?? 5,
       resume:               useResume,
     }
   }
@@ -392,11 +387,25 @@ export default function Step3Encode() {
     if (!dataset.seq_col) { toast.error('Select a sequence column in Step 1 first'); return }
     if (!dataset.act_col) { toast.error('Select an activity column in Step 1 first'); return }
     // Lazy upload: example datasets are parsed client-side (file_path is null)
-    // Upload to the backend now so we have a real file_path for the encode job
-    if (!dataset.file_path && dataset._pendingFile) {
+    // Upload to the backend now so we have a real file_path for the encode job.
+    // _pendingFile may have been serialised to {} by Zustand persist — reconstruct
+    // from _pendingFileText (plain string) which survives JSON serialisation.
+    if (!dataset.file_path) {
+      let fileToUpload = dataset._pendingFile instanceof File ? dataset._pendingFile : null
+      if (!fileToUpload && dataset._pendingFileText) {
+        fileToUpload = new File(
+          [dataset._pendingFileText],
+          dataset._pendingFileName ?? 'dataset.txt',
+          { type: 'text/plain' },
+        )
+      }
+      if (!fileToUpload) {
+        toast.error('Dataset file unavailable — please reload the sample dataset')
+        return
+      }
       try {
         toast('Uploading dataset to backend…', { duration: 2000 })
-        const uploaded = await uploadDataset(dataset._pendingFile)
+        const uploaded = await uploadDataset(fileToUpload)
         // Merge the real file_id/file_path into the existing dataset state
         setDataset({ ...dataset, file_id: uploaded.file_id, file_path: uploaded.file_path, _pendingFile: null })
         // Re-read from store for payload building below
@@ -409,7 +418,7 @@ export default function Step3Encode() {
     // Block if any autocorrelation descriptor lag exceeds the shortest sequence
     if (descWarnings.length > 0) {
       toast.error(
-        `Lag exceeds shortest sequence (${descWarnings[0]?.minLen} residues) — deselect or shorten lag for: ${descWarnings.map((w) => w.descriptor).join(', ')}`,
+        `Lag exceeds shortest sequence (${descWarnings[0]?.minLen} residues) — deselect or shorten lag for: ${descWarnings.map((w) => snakeToTitle(w.descriptor)).join(', ')}`,
         { duration: 6000 }
       )
       return
@@ -468,7 +477,7 @@ export default function Step3Encode() {
   const bigJobWarning = !encoding.max_models && (
     encoding.strategy === 'aai_descriptor'
       ? 'AAI + Descriptor can evaluate up to ~257,000 models. Set a Max models limit to constrain run time.'
-      : encoding.strategy === 'aai'
+      : encoding.strategy === 'aai' && selectedAaiIndices.length === 0
       ? 'AAI encoding will evaluate up to 566 models. Set Max models to limit if needed.'
       : null
   )
@@ -541,88 +550,96 @@ export default function Step3Encode() {
             <span className="ml-1 font-normal text-gray-400">(leave blank to use all 566)</span>
           </label>
 
-          {/* Chip container + typeahead input */}
-          <div className="relative">
-            <div
-              className="input min-h-[2.5rem] flex flex-wrap gap-1 p-1.5 cursor-text"
-              onClick={() => searchRef.current?.focus()}
-            >
-              {/* Selected chips — with hover tooltip showing the index title */}
-              {selectedAaiIndices.map((code) => {
-                const title = aaiIndexMap[code]
-                return (
-                  <span key={code} className="relative group/chip">
-                    <span className="inline-flex items-center gap-1 bg-indigo-100 text-indigo-800 text-xs font-mono px-2 py-0.5 rounded cursor-default">
-                      {code}
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); removeAaiIndex(code) }}
-                        className="hover:text-indigo-600 leading-none"
-                      >
-                        ×
-                      </button>
-                    </span>
-                    {/* Tooltip — appears above chip on hover */}
-                    {title && (
-                      <span className="pointer-events-none absolute bottom-full left-0 mb-1.5 z-50 w-64 rounded-lg bg-gray-900 text-white text-xs px-3 py-2 opacity-0 group-hover/chip:opacity-100 transition-opacity duration-150 shadow-xl">
-                        <span className="block font-semibold font-mono mb-0.5">{code}</span>
-                        <span className="block text-gray-300 leading-snug">{title}</span>
+          {/* Chip container + typeahead input + clear-all button */}
+          <div className="flex items-start gap-1.5">
+            {/* Input area — relative so the dropdown positions against it */}
+            <div className="relative flex-1">
+              <div
+                className="input min-h-[2.5rem] flex flex-wrap gap-1.5 p-1.5 cursor-text"
+                onClick={() => searchRef.current?.focus()}
+              >
+                {/* Selected chips — with hover tooltip showing the index title */}
+                {selectedAaiIndices.map((code) => {
+                  const title = aaiIndexMap[code]
+                  return (
+                    <span key={code} className="relative group/chip">
+                      <span className="inline-flex items-center gap-1 bg-indigo-100 text-indigo-800 text-xs font-mono px-2 py-0.5 rounded cursor-default">
+                        {code}
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); removeAaiIndex(code) }}
+                          className="hover:text-indigo-600 leading-none"
+                        >
+                          ×
+                        </button>
                       </span>
-                    )}
-                  </span>
-                )
-              })}
+                      {/* Tooltip — appears above chip on hover */}
+                      {title && (
+                        <span className="pointer-events-none absolute bottom-full left-0 mb-1.5 z-50 w-64 rounded-lg bg-gray-900 text-white text-xs px-3 py-2 opacity-0 group-hover/chip:opacity-100 transition-opacity duration-150 shadow-xl">
+                          <span className="block font-semibold font-mono mb-0.5">{code}</span>
+                          <span className="block text-gray-300 leading-snug">{title}</span>
+                        </span>
+                      )}
+                    </span>
+                  )
+                })}
 
-              {/* Search input */}
-              <input
-                ref={searchRef}
-                className="flex-1 min-w-[140px] bg-transparent outline-none text-xs font-mono"
-                placeholder={selectedAaiIndices.length === 0 ? 'Type to search indices…' : ''}
-                value={aaiSearch}
-                onChange={(e) => {
-                  const v = e.target.value
-                  setAaiSearch(v)
-                  setAaiDropdownOpen(true)
-                  // Debounce the filter value so rapid typing doesn't recompute on every keystroke
-                  clearTimeout(aaiDebounceRef.current)
-                  aaiDebounceRef.current = setTimeout(() => setAaiSearchDebounced(v), 250)
-                }}
-                onFocus={() => setAaiDropdownOpen(true)}
-                onBlur={() => setTimeout(() => setAaiDropdownOpen(false), 150)}
-                onKeyDown={(e) => {
-                  // Backspace on empty input removes last chip
-                  if (e.key === 'Backspace' && !aaiSearch && selectedAaiIndices.length > 0) {
-                    removeAaiIndex(selectedAaiIndices[selectedAaiIndices.length - 1])
-                  }
-                  // Enter selects first suggestion
-                  if (e.key === 'Enter' && filteredAaiIndices.length > 0) {
-                    e.preventDefault()
-                    addAaiIndex(filteredAaiIndices[0].code)
-                  }
-                }}
-              />
+                {/* Search input */}
+                <input
+                  ref={searchRef}
+                  className="flex-1 min-w-[190px] bg-transparent outline-none text-xs font-mono"
+                  placeholder={selectedAaiIndices.length === 0 ? 'Type to search indices…' : ''}
+                  value={aaiSearch}
+                  onChange={(e) => {
+                    setAaiSearch(e.target.value)
+                    setAaiDropdownOpen(true)
+                  }}
+                  onFocus={() => setAaiDropdownOpen(true)}
+                  onBlur={() => setTimeout(() => setAaiDropdownOpen(false), 150)}
+                  onKeyDown={(e) => {
+                    // Backspace on empty input removes last chip
+                    if (e.key === 'Backspace' && !aaiSearch && selectedAaiIndices.length > 0) {
+                      removeAaiIndex(selectedAaiIndices[selectedAaiIndices.length - 1])
+                    }
+                    // Enter selects first suggestion
+                    if (e.key === 'Enter' && filteredAaiIndices.length > 0) {
+                      e.preventDefault()
+                      addAaiIndex(filteredAaiIndices[0].code)
+                    }
+                  }}
+                />
+              </div>
+
+              {/* Dropdown suggestions — show code + title, scrollable for all results */}
+              {aaiDropdownOpen && filteredAaiIndices.length > 0 && (
+                <div className="absolute z-50 mt-1 w-full max-h-64 overflow-auto shadow-lg bg-white rounded border border-gray-200">
+                  {filteredAaiIndices.map(({ code, title }) => (
+                    <button
+                      key={code}
+                      type="button"
+                      className="w-full text-left px-3 py-1.5 hover:bg-indigo-50 flex items-baseline gap-2 min-w-0"
+                      onMouseDown={() => addAaiIndex(code)}
+                    >
+                      <span className="text-xs font-mono font-semibold text-indigo-700 shrink-0">{code}</span>
+                      {title && <span className="text-xs text-gray-400 truncate">{title}</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
-            {/* Dropdown suggestions — show code + title */}
-            {aaiDropdownOpen && filteredAaiIndices.length > 0 && (
-              <div className="absolute z-50 mt-1 w-full max-h-48 overflow-auto shadow-lg bg-white rounded border border-gray-200">
-                {filteredAaiIndices.slice(0, 60).map(({ code, title }) => (
-                  <button
-                    key={code}
-                    type="button"
-                    className="w-full text-left px-3 py-1.5 hover:bg-indigo-50 flex items-baseline gap-2 min-w-0"
-                    onMouseDown={() => addAaiIndex(code)}
-                  >
-                    <span className="text-xs font-mono font-semibold text-indigo-700 shrink-0">{code}</span>
-                    {title && <span className="text-xs text-gray-400 truncate">{title}</span>}
-                  </button>
-                ))}
-                {filteredAaiIndices.length > 60 && (
-                  <div className="px-3 py-1.5 text-xs text-gray-400 italic">
-                    +{filteredAaiIndices.length - 60} more — keep typing to narrow results
-                  </div>
-                )}
-              </div>
+            {/* Clear-all button — only shown when at least one index is selected */}
+            {selectedAaiIndices.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setEncoding({ aai_indices: [] })}
+                className="mt-0.5 p-1.5 rounded text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors shrink-0"
+                title="Clear all selected indices"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clipRule="evenodd" />
+                </svg>
+              </button>
             )}
           </div>
 
@@ -666,10 +683,21 @@ export default function Step3Encode() {
               Descriptors
               <span className="ml-1 font-normal text-gray-400">(leave all unchecked to use all)</span>
             </label>
-            {/* desc_combo */}
-            <div className="flex items-center gap-2">
-              <span className="label mb-0">Combo</span>
-              {[1, 2, 3].map((n) => (
+            {/* desc_combo + deselect all */}
+            <div className="flex items-center gap-3">
+              {/* Deselect all — only visible when at least one descriptor is checked */}
+              {(encoding.selected_descriptors ?? []).length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setEncoding({ selected_descriptors: [] })}
+                  className="text-xs text-gray-500 hover:text-red-500 transition-colors underline underline-offset-2"
+                >
+                  Deselect all
+                </button>
+              )}
+              <div className="flex items-center gap-2">
+                <span className="label mb-0">Combo</span>
+                {[1, 2, 3].map((n) => (
                 <button
                   key={n}
                   onClick={() => setEncoding({ desc_combo: n })}
@@ -683,6 +711,7 @@ export default function Step3Encode() {
                   {n}
                 </button>
               ))}
+              </div>
             </div>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
@@ -698,7 +727,7 @@ export default function Step3Encode() {
                     className="accent-indigo-600"
                   />
                   <span className={`text-xs leading-tight break-all ${hasWarning ? 'text-amber-600 dark:text-amber-400' : 'text-gray-600 dark:text-gray-400'}`}>
-                    {d}{hasWarning ? ' ⚠' : ''}
+                    {snakeToTitle(d)}{hasWarning ? ' ⚠' : ''}
                   </span>
                 </label>
               )
@@ -712,7 +741,7 @@ export default function Step3Encode() {
               <div className="flex-1">
                 <p className="font-semibold">Sequence length warning</p>
                 <p className="mt-0.5">
-                  {descWarnings.map((w) => w.descriptor).join(', ')} use lag={descWarnings[0]?.lag}, but your
+                  {descWarnings.map((w) => snakeToTitle(w.descriptor)).join(', ')} use lag={descWarnings[0]?.lag}, but your
                   shortest sequence is {descWarnings[0]?.minLen} residues. This may cause errors.
                 </p>
               </div>
@@ -776,6 +805,12 @@ export default function Step3Encode() {
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-1">
               <SnapItem label="Algorithm"  value={config.model.algorithms?.length > 1 ? `${config.model.algorithms.length} selected` : config.model.algorithm} mono />
               <SnapItem label="Test split" value={config.model.test_split} />
+              {/* Show train/test counts next to the split ratio */}
+              {dataset?.num_rows > 0 && (() => {
+                const total = dataset.num_rows
+                const tc = Math.round(total * (config.model.test_split ?? 0.2))
+                return <SnapItem label="Split count" value={`${total - tc} train / ${tc} test`} />
+              })()}
               <SnapItem label="DSP"        value={config.pyDSP?.use_dsp ? 'Enabled' : 'Off'} />
               <SnapItem label="Strategy"   value={encoding.strategy} />
               <SnapItem label="n_jobs"     value={encoding.n_jobs} />
@@ -812,6 +847,20 @@ export default function Step3Encode() {
                 <span className="text-gray-500">Estimated time: </span>
                 <span className="font-bold text-indigo-700">~{formatElapsed(dryRunEstimate.estimatedSecs)}</span>
               </div>
+              {/* Train/test split preview — derived from dataset row count + test_split */}
+              {dataset?.num_rows > 0 && (() => {
+                const total     = dataset.num_rows
+                const testCount = Math.round(total * (config.model.test_split ?? 0.2))
+                const trainCount = total - testCount
+                return (
+                  <div>
+                    <span className="text-gray-500">Split: </span>
+                    <span className="font-bold text-indigo-700">
+                      {total} → {trainCount} train / {testCount} test
+                    </span>
+                  </div>
+                )
+              })()}
             </div>
             <p className="text-gray-400 mt-1.5">
               Estimate assumes ~0.5 s/model at {encoding.n_jobs} worker{encoding.n_jobs !== 1 ? 's' : ''}.
@@ -845,7 +894,7 @@ export default function Step3Encode() {
             <label className="label">Max models <span className="font-normal text-gray-400">(optional)</span></label>
             <input
               type="number" className="input" min={1}
-              placeholder="unlimited"
+              placeholder=""
               value={encoding.max_models}
               onChange={(e) => setEncoding({ max_models: e.target.value })}
             />
@@ -919,19 +968,17 @@ export default function Step3Encode() {
               <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">
                 {isRunning ? 'Running…' : isDone ? 'Complete' : isCancelled ? 'Cancelled' : 'Failed'}
               </span>
-              {/* Live model count */}
+              {/* Live model count — uses ticker estimate while running, actual count when done */}
               {job.total_models > 0 && (
                 <span className="text-xs text-gray-400 tabular-nums">
-                  {(job.models_completed ?? 0).toLocaleString()} / {job.total_models.toLocaleString()} models
+                  {isRunning
+                    ? `~${(job.models_in_progress ?? 0).toLocaleString()} / ${job.total_models.toLocaleString()} models`
+                    : `${(job.models_completed ?? 0).toLocaleString()} models`}
                 </span>
               )}
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
-              {/* ETA while running */}
-              {isRunning && eta > 0 && (
-                <span className="text-xs text-gray-400">~{formatElapsed(eta)} remaining</span>
-              )}
               {/* Elapsed clock */}
               {startTs && (
                 <span className="flex items-center gap-1 text-xs text-gray-400">
@@ -951,13 +998,30 @@ export default function Step3Encode() {
             </div>
           </div>
 
-          {/* Progress bar */}
+          {/* Progress bar + live model counter */}
           {(isRunning || isDone) && (
-            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
-              <div
-                className={`h-1.5 rounded-full transition-all duration-500 ${isDone ? 'bg-green-500' : 'bg-indigo-500'}`}
-                style={{ width: `${job.progress ?? 0}%` }}
-              />
+            <div className="space-y-1">
+              {/* Model count row — shows "X / Y models" while encoding is running */}
+              {isRunning && job.total_models > 0 && (
+                <div className="flex items-center justify-between text-xs text-gray-400">
+                  <span className="tabular-nums">
+                    ~{(job.models_in_progress ?? 0).toLocaleString()} / {job.total_models.toLocaleString()} models evaluated
+                  </span>
+                  {eta > 0 && (
+                    <span>~{formatElapsed(eta)} remaining</span>
+                  )}
+                </div>
+              )}
+              <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
+                <div
+                  className={`h-1.5 rounded-full transition-all duration-500 ${isDone ? 'bg-green-500' : 'bg-indigo-500'}`}
+                  style={{ width: `${isDone ? 100 : (job.progress ?? 0)}%` }}
+                />
+              </div>
+              {/* Percentage label */}
+              {isRunning && (
+                <p className="text-right text-[10px] text-gray-400 tabular-nums">{job.progress ?? 0}% complete</p>
+              )}
             </div>
           )}
 

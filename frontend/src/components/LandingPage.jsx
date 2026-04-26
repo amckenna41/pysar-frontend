@@ -77,14 +77,14 @@ const FEATURES = [
     color: 'indigo',
     title: 'AAIndex Physicochemical Descriptors',
     description:
-      'Encode protein sequences using 566 numerical indices from the Amino Acid Index (AAI) database via the custom-built aaindex package, covering physicochemical and biochemical properties of amino acids.',
+      <>Encode protein sequences using 566 numerical indices from the Amino Acid Index (AAI) database via the custom-built <a href="https://github.com/amckenna41/aaindex" target="_blank" rel="noreferrer" className="underline hover:text-indigo-500">aaindex</a> package, covering physicochemical and biochemical properties of amino acids.</>,
   },
   {
     Icon: BeakerIcon,
     color: 'violet',
     title: 'Protein Descriptors',
     description:
-      'Calculate a broad range of structural, physicochemical and biochemical descriptors via the custom-built protpy package — including autocorrelation, CTD, quasi-sequence order and more.',
+      <>Calculate a broad range of structural, physicochemical and biochemical descriptors via the custom-built <a href="https://github.com/amckenna41/protpy" target="_blank" rel="noreferrer" className="underline hover:text-violet-500">protpy</a> package — including composition, autocorrelation, CTD, sequence order and more.</>,
   },
   {
     Icon: SignalIcon,
@@ -282,7 +282,7 @@ export default function LandingPage() {
 
         <p className="max-w-2xl text-base sm:text-lg text-gray-500 dark:text-gray-400 mb-8 leading-relaxed anim-fade-up-2">
           pySAR is a library for analysing <strong className="text-gray-700 dark:text-gray-200">Sequence–Activity Relationships (SARs)</strong> of protein sequences.
-          Numerically encode protein datasets using physicochemical descriptors and AAIndex features, then build
+          Numerically encode protein datasets using physicochemical descriptors, biochemical and structural features, then build
           predictive regression models to estimate the activity of unseen sequences.
         </p>
 
@@ -326,6 +326,7 @@ export default function LandingPage() {
       <section id="about" className="max-w-4xl mx-auto px-6 py-10 scroll-mt-20">
         <h2 className="text-xl font-bold text-center mb-2">About pySAR</h2>
         <p className="text-sm text-center text-gray-500 dark:text-gray-400 mb-8">A Python library for Sequence Activity Relationship analysis of protein sequences.</p>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
 
           {/* What it is */}

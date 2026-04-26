@@ -48,7 +48,7 @@ steps:
       - --memory=2Gi
       - --cpu=2
       - --min-instances=1             # keep warm — no cold starts
-      - --max-instances=3
+      - --max-instances=1             # single instance — JOBS state is in-memory, must not be split across instances
       - --timeout=3600                # allow long encoding jobs (max 1 hour)
       - --startup-cpu-boost            # extra CPU during cold start to load numpy/scipy faster
       - --cpu-throttling=false        # keep CPU allocated between requests for background encoding threads

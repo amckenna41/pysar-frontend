@@ -9,20 +9,25 @@ Wraps the pySAR encoding library and exposes REST endpoints for:
 import json
 import logging
 import math
+import multiprocessing as _mp
 import os
+import queue as _queue_mod
 import sys
 import tempfile
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import pandas as pd
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from collections import defaultdict
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
 
 # ── Path setup: locate the sibling pySAR repo and inject its dependencies ──────
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent   # pysar-frontend/
@@ -39,14 +44,41 @@ for _sp in _glob.glob(str(_PYSAR_REPO / ".venv" / "lib" / "python3.*" / "site-pa
     if _sp not in sys.path:
         sys.path.insert(1, _sp)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%S",
-)
+# ── Structured JSON logging (GCP Cloud Logging reads 'severity' and 'message' natively) ──
+class _JsonFormatter(logging.Formatter):
+    """Emit single-line JSON records; compatible with GCP Cloud Logging structured ingestion."""
+    _SEVERITY: Dict[str, str] = {
+        "DEBUG": "DEBUG", "INFO": "INFO", "WARNING": "WARNING",
+        "ERROR": "ERROR", "CRITICAL": "CRITICAL",
+    }
+
+    def format(self, record: logging.LogRecord) -> str:  # type: ignore[override]
+        payload: Dict[str, Any] = {
+            "severity": self._SEVERITY.get(record.levelname, record.levelname),
+            "message":  record.getMessage(),
+            "logger":   record.name,
+            "time":     self.formatTime(record, self.datefmt),
+        }
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+_json_handler = logging.StreamHandler()
+_json_handler.setFormatter(_JsonFormatter(datefmt="%Y-%m-%dT%H:%M:%S"))
+logging.basicConfig(handlers=[_json_handler], level=logging.INFO, force=True)
 logger = logging.getLogger("pysar_api")
 
-app = FastAPI(title="pySAR API", version="1.0.0", docs_url="/api/docs")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Start background threads on startup; replaces deprecated @app.on_event."""
+    threading.Thread(target=_prewarm_pysar, daemon=True).start()
+    threading.Thread(target=_cleanup_upload_dir, daemon=True, name="cleanup").start()
+    yield
+
+
+app = FastAPI(title="pySAR API", version="1.0.0", docs_url="/api/docs", lifespan=lifespan)
 
 # ── Detect Vercel deployment URL for CORS ────────────────────────────────────
 _VERCEL_URL = os.environ.get("VERCEL_URL")
@@ -65,6 +97,65 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Rate limiting ──────────────────────────────────────────────────────────────
+# Tracks per-IP request counts for rate-limited endpoints.
+# { ip: [(timestamp, ...), ...] } — uses a sliding window.
+_RATE_LIMIT_STORE: Dict[str, List[float]] = defaultdict(list)
+_RATE_LIMIT_LOCK = threading.Lock()
+
+# Limits per endpoint path prefix (requests per window_seconds)
+_RATE_LIMITS: Dict[str, Dict[str, int]] = {
+    "/api/encode": {"max_requests": 5, "window_seconds": 60},
+    "/api/upload": {"max_requests": 20, "window_seconds": 60},
+}
+
+
+# Only trust X-Forwarded-For when running behind a known proxy (Cloud Run / Fly.io).
+# Set TRUST_PROXY=true in the environment to enable; leave unset for direct exposure.
+_TRUST_PROXY = os.environ.get("TRUST_PROXY", "").lower() in ("1", "true", "yes")
+
+
+def _get_client_ip(request: Request) -> str:
+    """Extract real client IP; only trusts X-Forwarded-For when TRUST_PROXY=true."""
+    if _TRUST_PROXY:
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            return forwarded_for.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    """Sliding-window rate limiter for sensitive endpoints."""
+    path = request.url.path
+    # Only apply to POST requests on rate-limited paths
+    if request.method == "POST":
+        for prefix, limits in _RATE_LIMITS.items():
+            if path.startswith(prefix):
+                ip = _get_client_ip(request)
+                now = time.monotonic()
+                window = limits["window_seconds"]
+                max_req = limits["max_requests"]
+                # Use per-endpoint key so upload and encode have independent buckets
+                key = f"{ip}:{prefix}"
+                with _RATE_LIMIT_LOCK:
+                    # Prune timestamps outside the sliding window
+                    timestamps = _RATE_LIMIT_STORE[key]
+                    _RATE_LIMIT_STORE[key] = [t for t in timestamps if now - t < window]
+                    if len(_RATE_LIMIT_STORE[key]) >= max_req:
+                        logger.warning(
+                            "Rate limit exceeded: ip=%s path=%s count=%s/%s per %ss",
+                            ip, path, len(_RATE_LIMIT_STORE[key]), max_req, window,
+                        )
+                        return JSONResponse(
+                            status_code=429,
+                            content={"detail": f"Rate limit exceeded: max {max_req} requests per {window}s. Please wait before retrying."},
+                            headers={"Retry-After": str(window)},
+                        )
+                    _RATE_LIMIT_STORE[key].append(now)
+                break
+    return await call_next(request)
 
 # Temp directory shared by all jobs
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "pysar_frontend"
@@ -85,11 +176,18 @@ def _prewarm_pysar() -> None:
         logger.warning("pySAR pre-warm failed (will retry on first job): %s", exc)
 
 
+# TTL (seconds) for completed/failed/cancelled jobs before they are evicted from JOBS.
+# Keeps memory bounded even when upload files are still on disk.
+_JOB_COMPLETED_TTL_SECS = int(os.environ.get("JOB_COMPLETED_TTL_SECS", 1800))  # default 30 min
+
+
 def _cleanup_upload_dir(max_age_hours: int = 6) -> None:
-    """Delete temp files in UPLOAD_DIR older than max_age_hours; runs hourly."""
+    """Hourly sweep: removes old temp files, prunes ghost JOBS, and evicts expired rate-limit buckets."""
     while True:
         time.sleep(3600)  # wait an hour before each sweep
         cutoff = time.time() - max_age_hours * 3600
+
+        # ── Remove stale temp files ────────────────────────────────────────────
         removed = 0
         try:
             for f in UPLOAD_DIR.iterdir():
@@ -101,15 +199,95 @@ def _cleanup_upload_dir(max_age_hours: int = 6) -> None:
         if removed:
             logger.info("Temp-file cleanup: removed %s file(s) older than %sh", removed, max_age_hours)
 
+        # ── Prune completed/failed/cancelled jobs past their TTL ──────────────
+        # Evicts jobs regardless of whether their upload file still exists,
+        # bounding in-memory JOBS growth for long-running deployments.
+        _ttl_cutoff = datetime.now(timezone.utc).timestamp() - _JOB_COMPLETED_TTL_SECS
+        ttl_expired = [
+            jid for jid, job in list(JOBS.items())
+            if job.get("status") in ("completed", "failed", "cancelled")
+            and job.get("completed_at")
+            and datetime.fromisoformat(job["completed_at"]).timestamp() < _ttl_cutoff
+        ]
+        for jid in ttl_expired:
+            JOBS.pop(jid, None)
+            _CANCEL_EVENTS.pop(jid, None)
+            _CANCEL_PROCESSES.pop(jid, None)
+        if ttl_expired:
+            logger.info("JOBS cleanup: evicted %s job(s) past %ss TTL", len(ttl_expired), _JOB_COMPLETED_TTL_SECS)
 
-@app.on_event("startup")
-def startup() -> None:
-    """Pre-warm pySAR and start background cleanup thread."""
-    threading.Thread(target=_prewarm_pysar, daemon=True).start()
-    threading.Thread(target=_cleanup_upload_dir, daemon=True, name="cleanup").start()
+        # ── Prune ghost JOBS whose upload file no longer exists ────────────────
+        ghost_jobs = [
+            jid for jid, job in list(JOBS.items())
+            if job.get("status") in ("completed", "failed", "cancelled")
+            and job.get("file_path") and not Path(job["file_path"]).exists()
+        ]
+        for jid in ghost_jobs:
+            JOBS.pop(jid, None)
+            _CANCEL_EVENTS.pop(jid, None)
+            _CANCEL_PROCESSES.pop(jid, None)
+        if ghost_jobs:
+            logger.info("JOBS cleanup: pruned %s ghost job(s)", len(ghost_jobs))
+
+        # ── Evict expired rate-limit buckets ──────────────────────────────────
+        now_mono = time.monotonic()
+        max_window = max(v["window_seconds"] for v in _RATE_LIMITS.values())
+        with _RATE_LIMIT_LOCK:
+            expired_keys = [
+                k for k, ts in _RATE_LIMIT_STORE.items()
+                if not any(now_mono - t < max_window for t in ts)
+            ]
+            for k in expired_keys:
+                del _RATE_LIMIT_STORE[k]
+        if expired_keys:
+            logger.info("Rate-limit cleanup: evicted %s expired bucket(s)", len(expired_keys))
 
 
 # ── Pydantic request models ─────────────────────────────────────────────────────
+
+# Known pySAR algorithm names (mirrors VALID_ALGORITHMS in frontend/src/utils/configValidation.js)
+_VALID_ALGORITHMS: frozenset = frozenset({
+    "plsregression", "ridge", "lasso", "elasticnet", "svr",
+    "randomforest", "gradientboosting", "hgbr", "knn", "linearregression",
+    "extratrees", "bagging", "adaboost", "gpr", "linear",
+})
+
+def _subprocess_exit_hint(exitcode: int) -> str:
+    """Return a human-readable hint string for a subprocess that died abnormally.
+
+    Maps OS signal numbers (stored as negative exit codes by Python's
+    multiprocessing) to actionable guidance, distinguishing SIGSEGV from
+    SIGKILL/OOM from other OS terminations.
+    """
+    if exitcode == -11:  # SIGSEGV
+        return (
+            "The encoding subprocess crashed with a segmentation fault "
+            "(signal 11). On macOS this is often caused by a known "
+            "conflict between multiprocessing fork and Apple's "
+            "Objective-C runtime. Ensure the server was started with "
+            "OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES set in the "
+            "environment (use start.sh, which sets this automatically)."
+        )
+    if exitcode == -9:  # SIGKILL — typically OOM
+        return (
+            "The encoding subprocess was killed (signal 9), which "
+            "usually indicates the process ran out of memory. Try "
+            "reducing the dataset size, lowering max_models, or "
+            "increasing available RAM."
+        )
+    return (
+        f"The encoding subprocess was terminated by the OS "
+        f"(exit code {exitcode}). Try restarting the server and "
+        f"reducing the dataset size or max_models."
+    )
+
+# Maximum simultaneous running jobs per client IP
+_MAX_CONCURRENT_JOBS_PER_IP = 3
+
+# Maximum accepted upload size; overridable via MAX_UPLOAD_MB env var
+_MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", 10))
+_MAX_UPLOAD_BYTES = _MAX_UPLOAD_MB * 1024 * 1024
+
 
 class EncodeRequest(BaseModel):
     file_path: str
@@ -123,22 +301,69 @@ class EncodeRequest(BaseModel):
     descriptors_config: Optional[Dict[str, Any]] = Field(default_factory=dict)
     # DSP config
     dsp_config: Optional[Dict[str, Any]] = Field(default_factory=lambda: {"use_dsp": 0})
-    # Encoding strategy
-    strategy: str = "aai"
+    # Encoding strategy — only these three are supported by pySAR
+    strategy: Literal["aai", "descriptor", "aai_descriptor"] = "aai"
     aai_indices: Optional[List[str]] = None
     selected_descriptors: Optional[List[str]] = None
     desc_combo: int = 1
-    # Encoding tuning
-    sort_by: str = "R2"
+    # Encoding tuning — sort_by must be a recognised metric column
+    sort_by: Literal["R2", "RMSE", "MSE", "MAE", "RPD", "Explained_Var"] = "R2"
     n_jobs: int = 1
     max_models: Optional[int] = None
     sample_mode: bool = False
     random_state: Optional[int] = None
     resume: bool = False
     resume_file: str = ""
+    # Cross-validation settings — passed through to the pySAR model config
+    use_cv: bool = False
+    cv_folds: int = 5
+
+    @field_validator("file_path")
+    @classmethod
+    def _validate_file_path(cls, v: str) -> str:
+        """Reject paths that escape the upload directory (path traversal guard)."""
+        resolved = Path(v).resolve()
+        if not str(resolved).startswith(str(UPLOAD_DIR.resolve())):
+            raise ValueError("file_path must be within the server upload directory")
+        return str(resolved)
+
+    @field_validator("algorithm")
+    @classmethod
+    def _validate_algorithm(cls, v: str) -> str:
+        """Normalise to lowercase and check against the known pySAR algorithm whitelist."""
+        normalised = v.strip().lower()
+        if normalised not in _VALID_ALGORITHMS:
+            raise ValueError(
+                f"algorithm {v!r} is not supported. "
+                f"Valid options: {sorted(_VALID_ALGORITHMS)}"
+            )
+        return normalised
+
+    @field_validator("n_jobs")
+    @classmethod
+    def _clamp_n_jobs(cls, v: int) -> int:
+        """Cap n_jobs to the host CPU count to prevent thread pool exhaustion."""
+        return min(max(1, v), os.cpu_count() or 4)
 
 
 # ── Dataset helpers ─────────────────────────────────────────────────────────────
+
+import re as _re
+_UUID_RE = _re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    _re.IGNORECASE,
+)
+
+
+def _validate_file_id(file_id: str) -> None:
+    """Raise 400 if file_id is not a valid UUID4-format string.
+
+    Glob patterns accept metacharacters (*?[); validating before globbing prevents
+    a crafted file_id from enumerating files in the upload directory.
+    """
+    if not _UUID_RE.match(file_id):
+        raise HTTPException(status_code=400, detail="Invalid file_id format.")
+
 
 def _read_dataset(file_path: str) -> pd.DataFrame:
     """Read a dataset file as a DataFrame, trying TSV then CSV."""
@@ -343,6 +568,8 @@ def _build_config(req: EncodeRequest) -> Dict[str, Any]:
             "algorithm": req.algorithm,
             "parameters": req.model_parameters or {},
             "test_split": req.test_split,
+            "use_cv": req.use_cv,
+            "cv_folds": req.cv_folds,
         },
         "descriptors": req.descriptors_config or {},
         "pyDSP": req.dsp_config or {"use_dsp": 0},
@@ -376,6 +603,61 @@ def _estimate_total_models(req: EncodeRequest) -> int:
     if req.max_models:
         n = min(n, req.max_models)
     return n
+
+
+# ── Subprocess encoding worker ─────────────────────────────────────────────────
+
+def _pySAR_encode_worker(
+    queue: Any,
+    encoding: Any,
+    strategy: str,
+    aai_indices: Optional[List[str]],
+    selected_descriptors: Optional[List[str]],
+    desc_combo: int,
+    common: Dict[str, Any],
+) -> None:
+    """Runs pySAR encoding inside a forked subprocess and sends results via queue.
+
+    Using a subprocess (rather than a thread) allows the parent to call
+    proc.terminate() at any moment, which genuinely interrupts the blocking
+    pySAR encoding loop — something that is impossible with Python threads.
+    The queue carries at most one message: ("ok", df, y_test, y_pred) or ("error", msg).
+    """
+    # Redirect pySAR's automatic CSV output away from the project root.
+    # pySAR writes result files to an `outputs/` folder relative to cwd;
+    # by changing to a throwaway temp dir in this subprocess we prevent any
+    # files accumulating in the repo. The parent process cwd is unaffected.
+    _tmp_work_dir = tempfile.mkdtemp(prefix="pysar_enc_")
+    os.chdir(_tmp_work_dir)
+    try:
+        if strategy == "aai":
+            results_df = encoding.aai_encoding(aai_indices=aai_indices or None, **common)
+        elif strategy == "descriptor":
+            results_df = encoding.descriptor_encoding(
+                descriptors=selected_descriptors or None, desc_combo=desc_combo, **common
+            )
+        elif strategy == "aai_descriptor":
+            results_df = encoding.aai_descriptor_encoding(
+                aai_indices=aai_indices or None,
+                descriptors=selected_descriptors or None,
+                desc_combo=desc_combo,
+                **common,
+            )
+        else:
+            raise ValueError(f"Unknown strategy: {strategy!r}")
+        # Capture predicted vs actual from the encoding object before the child exits
+        y_test = getattr(encoding, "y_test", None)
+        y_pred = getattr(encoding, "y_pred", None)
+        queue.put(("ok", results_df, y_test, y_pred))
+    except Exception as exc:  # noqa: BLE001
+        queue.put(("error", str(exc), None, None))
+    finally:
+        # Clean up the temp working dir (contains only pySAR's discarded CSV output)
+        import shutil as _shutil
+        try:
+            _shutil.rmtree(_tmp_work_dir, ignore_errors=True)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ── Job runner ──────────────────────────────────────────────────────────────────
@@ -451,40 +733,73 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
             _log("Cancelled before encoding started.")
             return
 
-        # Phase 4: run encoding
+        # Phase 4: run encoding in a child process so it can be terminated on cancel.
+        # The child inherits the already-loaded `encoding` object via fork, so pySAR
+        # does not need to re-import from scratch — only the encoding loop runs there.
+        import threading as _threading
+        _enc_start = time.monotonic()
+        _est_secs  = max(1.0, (total_models or 10) * 0.5 / max(1, req.n_jobs))
+
+        def _progress_ticker() -> None:
+            while job.get("status") == "running" and job.get("progress", 0) < 95:
+                time.sleep(1)
+                _enc_elapsed = time.monotonic() - _enc_start
+                # Ramp from 45 → 95 proportionally over the estimated duration
+                _pct = min(95, int(45 + 50 * (_enc_elapsed / _est_secs)))
+                job["progress"] = _pct
+                # Also surface a live model count estimate to the frontend
+                _done = int(total_models * ((_pct - 45) / 50)) if total_models else 0
+                job["models_in_progress"] = _done
+
+        _threading.Thread(target=_progress_ticker, daemon=True).start()
+
+        # Start the subprocess
+        _enc_queue = _MP_CTX.Queue()
+        _enc_proc  = _MP_CTX.Process(
+            target=_pySAR_encode_worker,
+            args=(_enc_queue, encoding, req.strategy, req.aai_indices,
+                  req.selected_descriptors, req.desc_combo, common),
+            daemon=True,
+        )
+        _CANCEL_PROCESSES[job_id] = _enc_proc
         t_enc = time.monotonic()
-        if req.strategy == "aai":
-            logger.info("[job:%s] Running aai_encoding with %s index(es)", short_id, len(req.aai_indices or []) or "all")
-            results_df = encoding.aai_encoding(
-                aai_indices=req.aai_indices or None,
-                **common,
-            )
-        elif req.strategy == "descriptor":
-            logger.info("[job:%s] Running descriptor_encoding with %s descriptor(s) combo=%s", short_id, len(req.selected_descriptors or []) or "all", req.desc_combo)
-            results_df = encoding.descriptor_encoding(
-                descriptors=req.selected_descriptors or None,
-                desc_combo=req.desc_combo,
-                **common,
-            )
-        elif req.strategy == "aai_descriptor":
-            logger.info(
-                "[job:%s] Running aai_descriptor_encoding — %s index(es), %s descriptor(s) combo=%s",
-                short_id,
-                len(req.aai_indices or []) or "all",
-                len(req.selected_descriptors or []) or "all",
-                req.desc_combo,
-            )
-            results_df = encoding.aai_descriptor_encoding(
-                aai_indices=req.aai_indices or None,
-                descriptors=req.selected_descriptors or None,
-                desc_combo=req.desc_combo,
-                **common,
-            )
-        else:
-            raise ValueError(f"Unknown strategy: {req.strategy!r}")
+        logger.info("[job:%s] Encoding subprocess starting — strategy=%s", short_id, req.strategy)
+        _enc_proc.start()
+
+        # Poll for the result while checking the cancel flag every 2 s
+        _enc_result = None
+        while True:
+            if _cancelled():
+                # Hard-terminate the subprocess immediately
+                _enc_proc.terminate()
+                _enc_proc.join(timeout=3)
+                if _enc_proc.is_alive():
+                    _enc_proc.kill()
+                _CANCEL_PROCESSES.pop(job_id, None)
+                _log("Cancelled — encoding process terminated.")
+                return
+            try:
+                _enc_result = _enc_queue.get(timeout=2)
+                break
+            except _queue_mod.Empty:
+                # Subprocess is still running — loop again
+                if not _enc_proc.is_alive():
+                    # Died without sending a result — killed by an OS signal
+                    _CANCEL_PROCESSES.pop(job_id, None)
+                    raise RuntimeError(_subprocess_exit_hint(_enc_proc.exitcode))
+
+        _enc_proc.join(timeout=5)
+        _CANCEL_PROCESSES.pop(job_id, None)
+
+        # Unpack subprocess result
+        _status_flag, *_payload = _enc_result
+        if _status_flag == "error":
+            # Re-raise the original error message from the subprocess
+            raise RuntimeError(f"Encoding failed: {_payload[0]}")
+        results_df = _payload[0]
 
         enc_elapsed = time.monotonic() - t_enc
-        logger.info("[job:%s] Encoding finished in %.1fs", short_id, enc_elapsed)
+        logger.info("[job:%s] Encoding subprocess finished in %.1fs", short_id, enc_elapsed)
 
         if _cancelled():
             _log("Cancelled after encoding — results discarded.")
@@ -502,6 +817,37 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
         job["partial_results"] = results_df.head(10).to_dict(orient="records")  # top-10 preview
         job["results"] = results_df.to_dict(orient="records")
         job["columns"] = results_df.columns.tolist()
+
+        # Phase 6: capture predicted vs actual for the best model
+        try:
+            _metric_cols = {"R2", "RMSE", "MSE", "MAE", "RPD", "Explained_Var"}
+            id_col = next((c for c in results_df.columns if c not in _metric_cols), None)
+            if id_col and len(results_df) > 0:
+                best_id = str(results_df.iloc[0][id_col])
+                _log(f"Fitting best model ({best_id}) for predicted-vs-actual plot…")
+                # Re-run encoding with only the best model — fast single fit
+                if req.strategy == "aai":
+                    encoding.aai_encoding(aai_indices=[best_id], max_models=1, n_jobs=1, sort_by="R2")
+                elif req.strategy == "descriptor":
+                    encoding.descriptor_encoding(descriptors=[best_id], desc_combo=1, max_models=1, n_jobs=1, sort_by="R2")
+                elif req.strategy == "aai_descriptor":
+                    # For combined strategy, use best AAI index with all descriptors
+                    encoding.aai_encoding(aai_indices=[best_id], max_models=1, n_jobs=1, sort_by="R2")
+                y_test = getattr(encoding, "y_test", None)
+                y_pred = getattr(encoding, "y_pred", None)
+                if y_test is not None and y_pred is not None:
+                    # Flatten to 1-D lists in case pySAR returns 2-D arrays
+                    def _to_list(arr):
+                        import numpy as _np
+                        return [round(float(v), 6) for v in _np.ravel(arr)]
+                    job["best_model_predictions"] = {
+                        "model_name": best_id,
+                        "actual":     _to_list(y_test),
+                        "predicted":  _to_list(y_pred),
+                    }
+                    _log(f"Predictions captured: {len(job['best_model_predictions']['actual'])} test samples.")
+        except Exception as _pred_exc:
+            logger.warning("[job:%s] Could not capture best-model predictions: %s", short_id, _pred_exc)
 
     except Exception as exc:  # noqa: BLE001
         elapsed = time.monotonic() - job_start
@@ -1006,6 +1352,12 @@ async def upload_dataset(file: UploadFile = File(...)) -> Dict[str, Any]:
     file_id = str(uuid.uuid4())
     file_path = UPLOAD_DIR / f"{file_id}{ext}"
     content = await file.read()
+    # Reject files that exceed the size limit before writing to disk
+    if len(content) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum upload size is {_MAX_UPLOAD_MB} MB.",
+        )
     file_path.write_bytes(content)
 
     try:
@@ -1027,6 +1379,12 @@ async def upload_descriptors_csv(file: UploadFile = File(...)) -> Dict[str, Any]
     file_id = str(uuid.uuid4())
     file_path = UPLOAD_DIR / f"desc_{file_id}{ext}"
     content = await file.read()
+    # Reject files that exceed the size limit before writing to disk
+    if len(content) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum upload size is {_MAX_UPLOAD_MB} MB.",
+        )
     file_path.write_bytes(content)
 
     try:
@@ -1056,6 +1414,7 @@ async def upload_descriptors_csv(file: UploadFile = File(...)) -> Dict[str, Any]
 @app.get("/api/dataset/{file_id}/rows")
 def get_all_rows(file_id: str) -> Dict[str, Any]:
     """Return all rows for an uploaded dataset (no row cap)."""
+    _validate_file_id(file_id)
     # Reconstruct path by scanning UPLOAD_DIR for a file whose stem matches the id
     matches = list(UPLOAD_DIR.glob(f"{file_id}.*"))
     if not matches:
@@ -1088,9 +1447,11 @@ def _build_dataset_response(df: pd.DataFrame, file_id: str, filename: str,
     """Shared logic for building an upload/sample-load API response from a DataFrame."""
     seq_guess = next((c for c in df.columns if "seq" in c.lower()), df.columns[0])
     _ACT_EXCLUDE = {"sequence", "seq", "id", "name", "is_train"}
+    # Prefer numeric columns (skip the sequence column) when guessing the activity column
+    _act_candidates = [c for c in df.columns if c != seq_guess and c.lower() not in _ACT_EXCLUDE]
     act_guess = next(
-        (c for c in df.columns if c.lower() not in _ACT_EXCLUDE),
-        df.columns[-1],
+        (c for c in _act_candidates if pd.api.types.is_numeric_dtype(df[c])),
+        _act_candidates[0] if _act_candidates else df.columns[-1],
     )
     is_numeric_act = act_guess in df.columns and pd.api.types.is_numeric_dtype(df[act_guess])
     act_series = df[act_guess] if is_numeric_act else None
@@ -1173,6 +1534,7 @@ async def load_example_dataset(name: str) -> Dict[str, Any]:
 @app.post("/api/dataset/{file_id}/deduplicate")
 def deduplicate_dataset(file_id: str, seq_col: str) -> Dict[str, Any]:
     """Remove duplicate sequences and return a fresh file_id + updated stats."""
+    _validate_file_id(file_id)
     matches = list(UPLOAD_DIR.glob(f"{file_id}.*"))
     if not matches:
         raise HTTPException(status_code=404, detail="Dataset not found")
@@ -1194,6 +1556,7 @@ def deduplicate_dataset(file_id: str, seq_col: str) -> Dict[str, Any]:
 @app.post("/api/dataset/{file_id}/fix-missing-sequences")
 def fix_missing_sequences(file_id: str, seq_col: str, act_col: str) -> Dict[str, Any]:
     """Drop rows where the sequence column is null or empty and return a fresh dataset."""
+    _validate_file_id(file_id)
     matches = list(UPLOAD_DIR.glob(f"{file_id}.*"))
     if not matches:
         raise HTTPException(status_code=404, detail="Dataset not found")
@@ -1231,6 +1594,7 @@ def fix_missing_activity(
       median — fill nulls with the column median
       remove — drop rows with null activity
     """
+    _validate_file_id(file_id)
     matches = list(UPLOAD_DIR.glob(f"{file_id}.*"))
     if not matches:
         raise HTTPException(status_code=404, detail="Dataset not found")
@@ -1278,6 +1642,7 @@ def fix_outliers(
       winsorize — clamp values to [mean - 3σ, mean + 3σ]
       remove    — drop rows whose activity is an outlier
     """
+    _validate_file_id(file_id)
     matches = list(UPLOAD_DIR.glob(f"{file_id}.*"))
     if not matches:
         raise HTTPException(status_code=404, detail="Dataset not found")
@@ -1325,10 +1690,44 @@ def fix_outliers(
 # Per-job cancel events; keyed by job_id
 _CANCEL_EVENTS: Dict[str, threading.Event] = {}
 
+# Per-job subprocess handles; used to forcefully terminate encoding on cancel
+_CANCEL_PROCESSES: Dict[str, "_mp.Process"] = {}
+
+# Multiprocessing context — fork inherits parent sys.path and loaded modules so pySAR
+# does not need to be re-imported from scratch in every subprocess.
+# NOTE: on macOS, fork after numpy/BLAS/Objective-C initialisation can cause SIGSEGV
+# due to Apple's fork-safety mechanism. Set the env var before any Process.start() call
+# so that child processes inherit it and the Objective-C fork-safety check is disabled.
+# This is safe to set here because it only affects Objective-C runtime behaviour in
+# forked children; it has no effect on Linux.
+if sys.platform == "darwin":
+    os.environ.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
+
+_MP_CTX = _mp.get_context("fork")
+
 
 @app.post("/api/encode")
-def start_encoding(req: EncodeRequest) -> Dict[str, str]:
+def start_encoding(req: EncodeRequest, request: Request) -> Dict[str, str]:
     """Submit an encoding job; returns a job_id for polling."""
+    # Per-IP concurrent job limit — count pending/running jobs for this client
+    ip = _get_client_ip(request)
+    running_count = sum(
+        1 for j in JOBS.values()
+        if j.get("status") in ("pending", "running") and j.get("ip") == ip
+    )
+    if running_count >= _MAX_CONCURRENT_JOBS_PER_IP:
+        logger.warning(
+            "Concurrent job limit exceeded: ip=%s running=%s/%s",
+            ip, running_count, _MAX_CONCURRENT_JOBS_PER_IP,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Too many active jobs. Maximum {_MAX_CONCURRENT_JOBS_PER_IP} "
+                "concurrent jobs per IP — wait for a running job to finish."
+            ),
+        )
+
     job_id = str(uuid.uuid4())
     logger.info(
         "[job:%s] Encode request received — strategy=%s algorithm=%s file=%s",
@@ -1341,14 +1740,17 @@ def start_encoding(req: EncodeRequest) -> Dict[str, str]:
         "status": "pending",
         "progress": 0,
         "models_completed": 0,    # updated after encoding completes
+        "models_in_progress": 0,  # live estimate updated by ticker thread
         "total_models": 0,         # estimated before encoding starts
         "partial_results": [],     # top-10 rows populated on completion
         "log": [],
         "results": None,
         "columns": [],
+        "best_model_predictions": None,
         "error": None,
         "strategy": req.strategy,
         "algorithm": req.algorithm,
+        "ip": ip,                  # stored for concurrent job counting
         "created_at": datetime.now(timezone.utc).isoformat(),
         "started_at": None,
         "completed_at": None,
@@ -1373,6 +1775,11 @@ def cancel_job(job_id: str) -> Dict[str, str]:
     # Signal the cancel event so the thread detects it between phase boundaries
     if job_id in _CANCEL_EVENTS:
         _CANCEL_EVENTS[job_id].set()
+    # Immediately terminate the encoding subprocess if it is running
+    if job_id in _CANCEL_PROCESSES:
+        proc = _CANCEL_PROCESSES.pop(job_id)
+        proc.terminate()
+        logger.info("[job:%s] Encoding subprocess terminated by cancel request", job_id[:8])
     job = JOBS[job_id]
     if job["status"] in {"pending", "running"}:
         job["status"] = "cancelled"

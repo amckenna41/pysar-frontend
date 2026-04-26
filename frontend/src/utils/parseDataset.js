@@ -57,15 +57,17 @@ function _histogram(vals, bins = 20) {
   return buckets.map((count, i) => ({ bin: _round(lo + i * width, 4), count }))
 }
 
-// Simple CSV split — works for the pySAR dataset format (no quoted commas)
+// Simple CSV/TSV split — auto-detects comma vs tab delimiter
 function _parseCSV(text) {
   const lines = text.trim().split(/\r?\n/)
   if (!lines.length) return { headers: [], rows: [] }
-  const headers = lines[0].split(',')
+  // Use tab as separator if the first line contains one
+  const sep = lines[0].includes('\t') ? '\t' : ','
+  const headers = lines[0].split(sep)
   const rows = []
   for (let i = 1; i < lines.length; i++) {
     if (!lines[i].trim()) continue
-    const vals = lines[i].split(',')
+    const vals = lines[i].split(sep)
     const row = {}
     headers.forEach((h, j) => { row[h] = vals[j] ?? '' })
     rows.push(row)
@@ -221,6 +223,8 @@ export async function parseDatasetClientSide(file) {
     duplicate_info,
     missing_info,
     outlier_info,
-    _pendingFile:         file, // retained for lazy upload at encode time
+    _pendingFile:         file,     // valid File in-memory; NOT serializable by JSON.stringify
+    _pendingFileText:     text,     // raw text content — survives Zustand persist/rehydrate
+    _pendingFileName:     file.name, // original filename for File reconstruction
   }
 }

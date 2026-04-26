@@ -141,8 +141,4 @@ dmypy.json
 
 node_modules
 
-package-lock.json
-
-start.sh
-
-.vercelignore
+node_modules/

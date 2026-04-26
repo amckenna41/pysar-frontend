@@ -1,6 +1,24 @@
 import { useState } from 'react'
-import { MagnifyingGlassIcon, ChevronDownIcon, ChevronRightIcon, ExclamationTriangleIcon, CheckCircleIcon } from '@heroicons/react/24/outline'
+import { MagnifyingGlassIcon, ChevronDownIcon, ChevronRightIcon, ExclamationTriangleIcon, CheckCircleIcon, XMarkIcon, ArrowTopRightOnSquareIcon } from '@heroicons/react/24/outline'
 import { useAppStore } from '../store/appStore'
+
+// Scikit-learn documentation links per algorithm
+const SKLEARN_DOCS = {
+  plsregression:    'https://scikit-learn.org/stable/modules/generated/sklearn.cross_decomposition.PLSRegression.html',
+  randomforest:     'https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.RandomForestRegressor.html',
+  adaboost:         'https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.AdaBoostRegressor.html',
+  gradientboosting: 'https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingRegressor.html',
+  svr:              'https://scikit-learn.org/stable/modules/generated/sklearn.svm.SVR.html',
+  knn:              'https://scikit-learn.org/stable/modules/generated/sklearn.neighbors.KNeighborsRegressor.html',
+  ridge:            'https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.Ridge.html',
+  lasso:            'https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.Lasso.html',
+  elasticnet:       'https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.ElasticNet.html',
+  linear:           'https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.LinearRegression.html',
+  bagging:          'https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.BaggingRegressor.html',
+  extratrees:       'https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.ExtraTreesRegressor.html',
+  hgbr:             'https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.HistGradientBoostingRegressor.html',
+  gpr:              'https://scikit-learn.org/stable/modules/generated/sklearn.gaussian_process.GaussianProcessRegressor.html',
+}
 
 // Full metadata for all supported ML algorithms
 const ALGO_DATA = [
@@ -211,7 +229,24 @@ export default function ModelExplorer() {
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('All')
   const [expandedKey, setExpandedKey] = useState(null)
+  // Local editable params per algorithm — seeded from existing perAlgoParameters or defaultParams
+  const [editedParams, setEditedParams] = useState({})
   const numRows = dataset?.num_rows ?? null
+
+  // Get effective params for an algorithm: user edits → saved config → defaults
+  function getParams(algo) {
+    if (editedParams[algo.value] !== undefined) return editedParams[algo.value]
+    return { ...algo.defaultParams, ...(config.model.perAlgoParameters?.[algo.value] ?? {}) }
+  }
+
+  // Update a single param value for an algorithm in local state
+  function setParam(algoValue, key, rawVal) {
+    const parsed = rawVal === '' ? '' : isNaN(Number(rawVal)) ? rawVal : Number(rawVal)
+    setEditedParams((prev) => ({
+      ...prev,
+      [algoValue]: { ...getParams({ value: algoValue, defaultParams: {} }), [key]: parsed },
+    }))
+  }
 
   // Filter by search and category
   const filtered = ALGO_DATA.filter(({ value, label, category: cat, description }) => {
@@ -228,6 +263,13 @@ export default function ModelExplorer() {
     if (!current.includes(value)) {
       setConfigValue(['model', 'algorithms'], [...current, value])
     }
+    // Pre-fill any edited params into the persistent per-algo config
+    const params = editedParams[value]
+    if (params && Object.keys(params).length > 0) {
+      Object.entries(params).forEach(([k, v]) => {
+        setConfigValue(['model', 'perAlgoParameters', value, k], v)
+      })
+    }
     setShowModelExplorer(false)
   }
 
@@ -242,11 +284,21 @@ export default function ModelExplorer() {
         <div className="relative flex-1">
           <MagnifyingGlassIcon className="absolute left-3 top-2.5 w-4 h-4 text-gray-400 pointer-events-none" />
           <input
-            className="input pl-9"
+            className="input pl-9 pr-8"
             placeholder="Search algorithms…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
+          {/* Clear search */}
+          {search && (
+            <button
+              className="absolute right-2.5 top-2.5 text-gray-400 hover:text-gray-600 transition-colors"
+              onClick={() => setSearch('')}
+              aria-label="Clear search"
+            >
+              <XMarkIcon className="w-4 h-4" />
+            </button>
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
           {CATEGORIES.map((cat) => (
@@ -379,8 +431,44 @@ export default function ModelExplorer() {
                     </div>
                   </div>
 
-                  {/* Action button */}
-                  <div className="flex justify-end pt-1">
+                  {/* Editable default parameters */}
+                  {algo.defaultParams && Object.keys(algo.defaultParams).length > 0 && (
+                    <div className="pt-1 border-t border-gray-200">
+                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Parameters</p>
+                      <div className="flex flex-wrap gap-3">
+                        {Object.entries(getParams(algo)).map(([key, defaultVal]) => (
+                          <label key={key} className="flex flex-col gap-0.5">
+                            <span className="text-xs text-gray-500 font-mono">{key}</span>
+                            <input
+                              type={typeof defaultVal === 'number' ? 'number' : 'text'}
+                              step="any"
+                              className="input w-28 text-xs font-mono py-1"
+                              value={getParams(algo)[key] ?? ''}
+                              onChange={(e) => setParam(algo.value, key, e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                          </label>
+                        ))}
+                      </div>
+                      <p className="text-xs text-gray-400 mt-1.5">Changes are saved when you click “Use this model”.</p>
+                    </div>
+                  )}
+
+                  {/* Action + sklearn link row */}
+                  <div className="flex items-center justify-between gap-3 pt-1">
+                    {/* Scikit-learn docs link */}
+                    {SKLEARN_DOCS[algo.value] && (
+                      <a
+                        href={SKLEARN_DOCS[algo.value]}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-xs text-indigo-500 hover:text-indigo-700 hover:underline"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <ArrowTopRightOnSquareIcon className="w-3.5 h-3.5" /> scikit-learn docs
+                      </a>
+                    )}
+                    <div className="flex-1" />
                     <button
                       onClick={() => selectAlgorithm(algo.value)}
                       disabled={isActive}

@@ -3,6 +3,7 @@
  * Holds dataset info, config state, encoding params, job status and results.
  */
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 
 // ── Default config values (mirrors pySAR defaults) ────────────────────────────
 export const DEFAULT_CONFIG = {
@@ -96,8 +97,21 @@ function setNested(obj, path, value) {
   return result
 }
 
+/**
+ * Validate that an imported config object has the required top-level sections
+ * and that each section is a non-null object.  Returns false on any mismatch.
+ */
+function _validateConfig(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false
+  const required = ['model', 'descriptors', 'pyDSP']
+  if (!required.every((k) => k in obj)) return false
+  return required.every((k) => obj[k] !== null && typeof obj[k] === 'object' && !Array.isArray(obj[k]))
+}
+
 // ── Store ──────────────────────────────────────────────────────────────────────
-export const useAppStore = create((set, get) => ({
+export const useAppStore = create(
+  persist(
+    (set, get) => ({
   // ── Dark mode ──
   darkMode: typeof window !== 'undefined' && document.documentElement.classList.contains('dark'),
   toggleDarkMode: () => set((s) => {
@@ -122,7 +136,10 @@ export const useAppStore = create((set, get) => ({
   //   preview, seq_col, act_col, length_stats, activity_stats
   // }
   setDataset: (dataset) => set({ dataset }),
-  clearDataset: () => set({ dataset: null, step: 1 }),
+  // Clears the dataset and resets config + encoding to defaults so stale
+  // per-dataset params (e.g. AAI indices, descriptors, model config) don't
+  // carry over when a new dataset is uploaded.
+  clearDataset: () => set({ dataset: null, step: 1, config: DEFAULT_CONFIG, encoding: DEFAULT_ENCODING }),
 
   // ── Config ──
   config: DEFAULT_CONFIG,
@@ -133,7 +150,29 @@ export const useAppStore = create((set, get) => ({
 
   resetConfig: () => set({ config: DEFAULT_CONFIG }),
 
-  importConfig: (configObj) => set({ config: configObj }),
+  /**
+   * Import an external config object, validating its structure first.
+   * Deep-merges with DEFAULT_CONFIG so missing nested keys are filled in.
+   * Silently rejects malformed configs to prevent state corruption.
+   */
+  importConfig: (configObj) => {
+    if (!_validateConfig(configObj)) {
+      console.warn('pySAR: importConfig rejected malformed config', configObj)
+      return
+    }
+    // Deep-merge so any missing nested keys fall back to defaults
+    const merged = {
+      model: { ...DEFAULT_CONFIG.model, ...configObj.model },
+      descriptors: { ...DEFAULT_CONFIG.descriptors, ...configObj.descriptors },
+      pyDSP: {
+        ...DEFAULT_CONFIG.pyDSP,
+        ...configObj.pyDSP,
+        window: { ...DEFAULT_CONFIG.pyDSP.window, ...configObj.pyDSP?.window },
+        filter: { ...DEFAULT_CONFIG.pyDSP.filter, ...configObj.pyDSP?.filter },
+      },
+    }
+    set({ config: merged })
+  },
 
   // ── Encoding params ──
   encoding: DEFAULT_ENCODING,
@@ -291,4 +330,30 @@ export const useAppStore = create((set, get) => ({
   shiftQueue: () => set((s) => ({ encodingQueue: s.encodingQueue.slice(1) })),
   removeFromQueue: (index) => set((s) => ({ encodingQueue: s.encodingQueue.filter((_, i) => i !== index) })),
   clearQueue: () => set({ encodingQueue: [] }),
-}))
+    }),
+    {
+    name: 'pysar-app-state',
+    // Only persist user-meaningful state; transient UI and already-persisted slices are excluded
+    partialize: (state) => ({
+      darkMode:       state.darkMode,
+      showLanding:    state.showLanding,
+      step:           state.step,
+      // Strip _pendingFile (a File object): JSON.stringify serialises it to {} which
+      // is truthy but breaks the lazy-upload in handleRun after a page reload.
+      // _pendingFileText / _pendingFileName are plain strings and survive serialisation.
+      dataset:        state.dataset
+        ? { ...state.dataset, _pendingFile: undefined }
+        : null,
+      config:         state.config,
+      encoding:       state.encoding,
+      aaiIndicesCache: state.aaiIndicesCache,
+    }),
+    // Re-apply dark mode CSS class after state is rehydrated from localStorage
+    onRehydrateStorage: () => (state) => {
+      if (state?.darkMode) {
+        document.documentElement.classList.add('dark')
+      }
+    },
+  }
+  )
+)

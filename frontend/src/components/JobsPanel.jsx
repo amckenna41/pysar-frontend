@@ -16,6 +16,13 @@ import {
   XMarkIcon,
 } from '@heroicons/react/24/outline'
 import { StarIcon as StarSolidIcon } from '@heroicons/react/24/solid'
+import {
+  ResponsiveContainer,
+  BarChart, Bar,
+  XAxis, YAxis,
+  CartesianGrid, Tooltip,
+  Legend,
+} from 'recharts'
 import toast from 'react-hot-toast'
 import { useAppStore } from '../store/appStore'
 
@@ -620,6 +627,19 @@ function ComparePanel({ entries, onClose }) {
     { label: 'Submitted',   fn: (e) => e.submitted_at ? new Date(e.submitted_at).toLocaleString() : '—' },
   ]
 
+  // Build top-N R² comparison chart from stored result_summary arrays
+  const aVals = a.result_summary ?? (a.best_r2 != null ? [a.best_r2] : [])
+  const bVals = b.result_summary ?? (b.best_r2 != null ? [b.best_r2] : [])
+  const chartLen = Math.min(10, Math.max(aVals.length, bVals.length))
+  const r2ChartData = Array.from({ length: chartLen }, (_, i) => ({
+    rank:  `#${i + 1}`,
+    jobA:  aVals[i] != null ? +aVals[i].toFixed(4) : null,
+    jobB:  bVals[i] != null ? +bVals[i].toFixed(4) : null,
+  }))
+  // Abbreviated labels so they fit in the legend
+  const labelA = `${a.algorithm ?? 'Job A'} (A)`
+  const labelB = `${b.algorithm ?? 'Job B'} (B)`
+
   return (
     <div className="card p-4 space-y-3 border-amber-200 bg-amber-50/30">
       <div className="flex items-center justify-between">
@@ -628,6 +648,26 @@ function ComparePanel({ entries, onClose }) {
         </h3>
         <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600"><XMarkIcon className="w-4 h-4" /></button>
       </div>
+
+      {/* ── Visual R² chart (shown when either job has result_summary data) ── */}
+      {chartLen > 0 && (
+        <div>
+          <p className="text-xs font-medium text-gray-500 mb-1">Top-{chartLen} R² comparison</p>
+          <ResponsiveContainer width="100%" height={180}>
+            <BarChart data={r2ChartData} margin={{ left: 0, right: 8, top: 4, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
+              <XAxis dataKey="rank" tick={{ fontSize: 10 }} />
+              <YAxis domain={[0, 1]} tickCount={5} tick={{ fontSize: 10 }} />
+              <Tooltip formatter={(v) => (v != null ? v.toFixed(4) : '—')} />
+              <Legend wrapperStyle={{ fontSize: 10 }} />
+              <Bar dataKey="jobA" name={labelA} fill="#6366f1" radius={[2, 2, 0, 0]} maxBarSize={20} />
+              <Bar dataKey="jobB" name={labelB} fill="#10b981" radius={[2, 2, 0, 0]} maxBarSize={20} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* ── Parameter diff table ── */}
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>

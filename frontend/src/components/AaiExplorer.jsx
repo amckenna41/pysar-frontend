@@ -26,6 +26,9 @@ export default function AaiExplorer() {
   const [search, setSearch] = useState('')
   const [selectedCategory, setSelectedCategory] = useState('All')
   const [expandedCode, setExpandedCode] = useState(null)
+  // Pagination state
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState(50)
 
   // Read and update the encoding selection from global store
   const { encoding, setEncoding } = useAppStore()
@@ -93,6 +96,13 @@ export default function AaiExplorer() {
       return matchSearch && matchCategory
     })
   }, [records, search, selectedCategory])
+
+  // Reset to page 0 when filters change
+  useEffect(() => { setPage(0) }, [search, selectedCategory, pageSize])
+
+  // Paginated slice of filtered records
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const paginated = filtered.slice(page * pageSize, (page + 1) * pageSize)
 
   // Toggle row expansion; collapse if already open
   const toggleExpand = (code) =>
@@ -204,7 +214,7 @@ export default function AaiExplorer() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {filtered.map((rec) => {
+                {paginated.map((rec) => {
                   const cat = rec.category || 'other'
                   const isExpanded = expandedCode === rec.code
                   const isSelected = selectedIndices.includes(rec.code)
@@ -293,6 +303,54 @@ export default function AaiExplorer() {
               <p className="text-center py-8 text-gray-400 text-sm">No indices match your search.</p>
             )}
           </div>
+
+          {/* Pagination controls */}
+          {filtered.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 mt-3 text-xs text-gray-500">
+              {/* Page size selector */}
+              <div className="flex items-center gap-2">
+                <span>Rows per page:</span>
+                <select
+                  className="border border-gray-200 rounded px-2 py-1 text-xs bg-white"
+                  value={pageSize}
+                  onChange={(e) => setPageSize(e.target.value === 'All' ? Infinity : Number(e.target.value))}
+                >
+                  {[25, 50, 100, 'All'].map((n) => (
+                    <option key={n} value={n === 'All' ? 'All' : n}>{n}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Showing X–Y of Z */}
+              <span>
+                {pageSize === Infinity
+                  ? `All ${filtered.length} indices`
+                  : `${page * pageSize + 1}–${Math.min((page + 1) * pageSize, filtered.length)} of ${filtered.length}`
+                }
+              </span>
+
+              {/* Prev / Next */}
+              {pageSize !== Infinity && (
+                <div className="flex items-center gap-1">
+                  <button
+                    className="px-2.5 py-1 rounded border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                    disabled={page === 0}
+                    onClick={() => setPage((p) => p - 1)}
+                  >
+                    ← Prev
+                  </button>
+                  <span className="px-2">{page + 1} / {totalPages}</span>
+                  <button
+                    className="px-2.5 py-1 rounded border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                    disabled={page >= totalPages - 1}
+                    onClick={() => setPage((p) => p + 1)}
+                  >
+                    Next →
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

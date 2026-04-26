@@ -22,7 +22,7 @@ const CTD_PROPERTIES = [
 const DISTANCE_MATRICES = ['schneider-wrede', 'grantham']
 
 // Descriptor metadata: which params each descriptor exposes
-const DESCRIPTORS = [
+export const DESCRIPTORS = [
   { key: 'aggregation_propensity',              group: 'Composition',         label: 'Aggregation Propensity',              params: [] },
   { key: 'aliphatic_index',                     group: 'Composition',         label: 'Aliphatic Index',                     params: [] },
   { key: 'amino_acid_composition',              group: 'Composition',         label: 'Amino Acid Composition',              params: [] },

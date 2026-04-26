@@ -16,6 +16,26 @@ const client = axios.create({
   timeout: 30_000,
 })
 
+// ── Retry interceptor — retries up to 3 times on network errors or 503/502 ────
+// Uses exponential backoff (1s → 2s → 4s) to handle transient backend failures.
+const MAX_RETRIES = 3
+client.interceptors.response.use(null, async (error) => {
+  const config = error.config
+  // Only retry safe/idempotent methods; skip if already retried max times
+  const isRetryable =
+    !error.response ||
+    error.response.status === 503 ||
+    error.response.status === 502
+  const attempt = config._retryCount ?? 0
+  if (isRetryable && attempt < MAX_RETRIES && ['get', 'GET'].includes(config.method ?? '')) {
+    config._retryCount = attempt + 1
+    const delay = Math.pow(2, attempt) * 1000  // 1s, 2s, 4s
+    await new Promise((res) => setTimeout(res, delay))
+    return client(config)
+  }
+  return Promise.reject(error)
+})
+
 // ── Dataset ────────────────────────────────────────────────────────────────────
 
 /**
@@ -29,6 +49,7 @@ export async function uploadDataset(file, onProgress) {
   form.append('file', file)
   const { data } = await client.post('/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 0, // unlimited — server-side processing can take longer than 30s for large files
     onUploadProgress: (e) => {
       if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100))
     },
@@ -47,6 +68,7 @@ export async function uploadDescriptorsCSV(file, onProgress) {
   form.append('file', file)
   const { data } = await client.post('/upload-descriptors', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 0, // unlimited — server-side processing can take longer than 30s for large files
     onUploadProgress: (e) => {
       if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100))
     },

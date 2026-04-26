@@ -61,6 +61,7 @@ const STEPS = [
       'Pin rows in the results table to compare multiple models side-by-side in the Pinned Comparison panel, with deltas shown relative to the overall best.',
       'Sort the table by any metric column and toggle between chart views to visualise performance across runs.',
       'Download results as CSV for offline analysis.',
+      'Export a PDF report via the "Export PDF" button. A modal lets you customise what is included: the number of results rows (top 10/25/50 or all), a config snapshot, an appendix with result charts, and a full configuration parameter listing.',
     ],
   },
 ]

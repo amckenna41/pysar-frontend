@@ -1,26 +1,31 @@
-import { useRef, useState } from 'react'
-import { ArrowLeftIcon, ArrowRightIcon, ArrowUpTrayIcon, ArrowDownTrayIcon, XMarkIcon, ArrowPathIcon } from '@heroicons/react/24/outline'
+import { useRef, useState, useMemo } from 'react'
+import { ArrowLeftIcon, ArrowRightIcon, ArrowUpTrayIcon, ArrowDownTrayIcon, XMarkIcon, ArrowPathIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline'
 import toast from 'react-hot-toast'
-import { useAppStore } from '../store/appStore'
+import { useAppStore, DEFAULT_CONFIG } from '../store/appStore'
 import ModelConfig from '../components/ModelConfig'
 import DescriptorConfig from '../components/DescriptorConfig'
 import DSPConfig from '../components/DSPConfig'
 import ConfigPreview from '../components/ConfigPreview'
-
-const TABS = [
-  { id: 'model',       label: 'Model' },
-  { id: 'descriptors', label: 'Descriptors' },
-  { id: 'dsp',         label: 'DSP' },
-  { id: 'preview',     label: 'Config Preview' },
-]
+import { validateConfig, countDiffs } from '../utils/configValidation'
 
 export default function Step2Configure() {
   const { setStep, config, importConfig, resetConfig } = useAppStore()
   const [activeTab, setActiveTab] = useState('model')
   const [importedFilename, setImportedFilename] = useState(null) // tracks uploaded config name
+  const [importErrors, setImportErrors] = useState([])           // validation errors from last import
   const fileInputRef = useRef(null)
 
-  // ── Parse and apply uploaded JSON config file ─────────────────────────────
+  // Count settings changed from defaults — drives the badge on the Config Preview tab
+  const diffCount = useMemo(() => countDiffs(config, DEFAULT_CONFIG), [config])
+
+  const TABS = [
+    { id: 'model',       label: 'Model' },
+    { id: 'descriptors', label: 'Descriptors' },
+    { id: 'dsp',         label: 'DSP' },
+    { id: 'preview',     label: 'Config Preview', badge: diffCount > 0 ? diffCount : null },
+  ]
+
+  // ── Parse, validate, and apply uploaded JSON config file ──────────────────
   function handleConfigFile(e) {
     const file = e.target.files?.[0]
     if (!file) return
@@ -33,11 +38,20 @@ export default function Step2Configure() {
     reader.onload = (ev) => {
       try {
         const parsed = JSON.parse(ev.target.result)
+        // Validate against expected schema before applying
+        const errors = validateConfig(parsed)
+        setImportErrors(errors)
+        if (errors.length > 0) {
+          // Surface errors but still apply the config (warn, don't block)
+          toast.error(`Config loaded with ${errors.length} warning(s) — review below`, { duration: 5000 })
+        } else {
+          toast.success(`Config loaded from ${file.name}`)
+        }
         importConfig(parsed)
         setImportedFilename(file.name)
-        toast.success(`Config loaded from ${file.name}`)
       } catch {
         toast.error('Invalid JSON — could not parse config file')
+        setImportErrors([])
       }
     }
     reader.readAsText(file)
@@ -48,6 +62,7 @@ export default function Step2Configure() {
   function clearImportedConfig() {
     resetConfig()
     setImportedFilename(null)
+    setImportErrors([])
     toast('Config reset to defaults')
   }
 
@@ -124,16 +139,52 @@ export default function Step2Configure() {
         )}
       </div>
 
+      {/* Config import validation errors — shown when the uploaded file has issues */}
+      {importErrors.length > 0 && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-900/20 px-4 py-3">
+          <div className="flex items-start gap-2">
+            <ExclamationTriangleIcon className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-semibold text-amber-700 dark:text-amber-300 mb-1">
+                Config loaded with {importErrors.length} warning{importErrors.length !== 1 ? 's' : ''}
+              </p>
+              <ul className="space-y-0.5">
+                {importErrors.map((err, i) => (
+                  <li key={i} className="text-xs text-amber-700 dark:text-amber-400 font-mono">• {err}</li>
+                ))}
+              </ul>
+              <p className="text-xs text-amber-600 mt-1.5">
+                The config was applied as-is. Correct these values before running an encoding job.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="text-amber-400 hover:text-amber-600 shrink-0"
+              onClick={() => setImportErrors([])}
+              aria-label="Dismiss warnings"
+            >
+              <XMarkIcon className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Tab bar + reset button */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg">
-          {TABS.map(({ id, label }) => (
+          {TABS.map(({ id, label, badge }) => (
             <button
               key={id}
               onClick={() => setActiveTab(id)}
-              className={activeTab === id ? 'tab-btn-active' : 'tab-btn-inactive'}
+              className={`${activeTab === id ? 'tab-btn-active' : 'tab-btn-inactive'} relative flex items-center gap-1`}
             >
               {label}
+              {/* Orange badge showing count of settings changed from defaults */}
+              {badge != null && (
+                <span className="ml-0.5 inline-flex items-center justify-center min-w-[16px] h-4 rounded-full bg-amber-500 text-white text-[10px] font-bold px-1">
+                  {badge}
+                </span>
+              )}
             </button>
           ))}
         </div>

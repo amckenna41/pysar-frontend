@@ -9,9 +9,12 @@
     "backend": "python3 -m uvicorn backend.main:app --reload --port 8000",
     "frontend": "npm --prefix frontend run dev",
     "build": "npm --prefix frontend run build",
-    "install:all": "npm --prefix frontend install"
+    "install:all": "npm --prefix frontend install",
+    "test:unit": "npm --prefix frontend run test",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.52.0",
     "concurrently": "^9.1.2"
   }
 }

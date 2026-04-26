@@ -1,5 +1,4 @@
 import { useState, useMemo, useRef, useCallback, useEffect } from 'react'
-import * as XLSX from 'xlsx'
 import confetti from 'canvas-confetti'
 import {
   ArrowLeftIcon,
@@ -20,7 +19,7 @@ import {
   ArrowPathIcon,
 } from '@heroicons/react/24/outline'
 import { useAppStore } from '../store/appStore'
-import ResultsCharts from '../components/ResultsCharts'
+import ResultsCharts, { PredictedActualChart } from '../components/ResultsCharts'
 import toast from 'react-hot-toast'
 
 const METRIC_COLS = ['R2', 'RMSE', 'MSE', 'MAE', 'RPD', 'Explained_Var']
@@ -51,7 +50,7 @@ function modelId(row, columns) {
 }
 
 export default function Step4Results() {
-  const { results, resultColumns, setStep, job, encoding, setEncoding, jobHistory } = useAppStore()
+  const { results, resultColumns, setStep, job, encoding, setEncoding, jobHistory, config, dataset } = useAppStore()
 
   // ── Tab navigation ────────────────────────────────────────────────────────
   const [tab, setTab] = useState('table')
@@ -60,8 +59,15 @@ export default function Step4Results() {
   const [sortCol, setSortCol]       = useState('R2')
   const [sortDir, setSortDir]       = useState('desc')
   const [filterText, setFilterText] = useState('')
+  const [filterTextDebounced, setFilterTextDebounced] = useState('')
   const [page, setPage]             = useState(0)
   const PAGE_SIZE = 50
+
+  // ── Debounce filterText → filterTextDebounced (150 ms) ────────────────────
+  useEffect(() => {
+    const timer = setTimeout(() => setFilterTextDebounced(filterText), 150)
+    return () => clearTimeout(timer)
+  }, [filterText])
 
   // ── Threshold filters — per metric ───────────────────────────────────────
   const [thresholds, setThresholds] = useState({})
@@ -80,6 +86,22 @@ export default function Step4Results() {
   // ── Stats panel ───────────────────────────────────────────────────────────
   const [showStats, setShowStats] = useState(false)
 
+  // ── PDF export options modal ──────────────────────────────────────────────
+  const [isPdfCapturing, setIsPdfCapturing] = useState(false) // true while chart SVGs are being captured
+  const [showPdfModal, setShowPdfModal] = useState(false)
+  const [pdfOptions, setPdfOptions] = useState({
+    allResults:      false, // export every row (default: top N only)
+    topN:            10,    // how many rows when allResults=false
+    includeCharts:   true,  // include charts in appendix
+    includeStats:    true,  // include descriptive statistics table
+    includeDataset:  true,  // include dataset summary section
+    includeEncoding: true,  // include encoding parameters section
+    includeSnapshot: true,  // include brief config snapshot section
+    includeAppendix: true,  // include full config appendix
+  })
+  // Toggle a boolean pdf option by key
+  const togglePdfOpt = (key) => setPdfOptions((o) => ({ ...o, [key]: !o[key] }))
+
   // ── Visible columns (excluding hidden) ───────────────────────────────────
   const visibleCols = useMemo(
     () => (resultColumns ?? []).filter((c) => !hiddenCols.has(c)),
@@ -91,9 +113,9 @@ export default function Step4Results() {
     if (!results) return []
     let data = [...results]
 
-    // Text filter
-    if (filterText.trim()) {
-      const q = filterText.toLowerCase()
+    // Text filter (debounced to avoid re-running on every keystroke)
+    if (filterTextDebounced.trim()) {
+      const q = filterTextDebounced.toLowerCase()
       data = data.filter((r) =>
         Object.values(r).some((v) => String(v ?? '').toLowerCase().includes(q))
       )
@@ -118,7 +140,7 @@ export default function Step4Results() {
     })
 
     return data
-  }, [results, sortCol, sortDir, filterText, thresholds])
+  }, [results, sortCol, sortDir, filterTextDebounced, thresholds])
 
   // ── Rows with rank percentile column injected ─────────────────────────────
   const rowsWithRank = useMemo(() => {
@@ -141,7 +163,10 @@ export default function Step4Results() {
       if (!vals.length) return null
       const sorted = [...vals].sort((a, b) => a - b)
       const mean = vals.reduce((s, v) => s + v, 0) / vals.length
-      const std  = Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length)
+      // Use sample std dev (n-1) rather than population std dev
+      const std  = vals.length > 1
+        ? Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / (vals.length - 1))
+        : 0
       return {
         metric: m,
         count: vals.length,
@@ -194,8 +219,10 @@ export default function Step4Results() {
     downloadBlob([header, ...csvRows].join('\n'), 'text/csv', 'pysar_results.csv')
   }
 
-  function handleExportExcel() {
+  async function handleExportExcel() {
     if (!results?.length || !resultColumns?.length) return
+    // Lazy-import xlsx so it is not included in the initial bundle
+    const XLSX = await import('xlsx')
     const ws = XLSX.utils.json_to_sheet(results, { header: resultColumns })
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'pySAR Results')
@@ -206,6 +233,447 @@ export default function Step4Results() {
     if (!results?.length) return
     const payload = { job_id: job?.job_id, strategy: job?.strategy, algorithm: job?.algorithm, results }
     downloadBlob(JSON.stringify(payload, null, 2), 'application/json', 'pysar_results.json')
+  }
+
+  // ── PDF report export — captures summary, best model, top-N table, and config ──
+  async function handleExportPDF(opts = pdfOptions) {
+    toast.loading('Generating PDF…', { id: 'pdf' })
+    // Hoisted so the finally block can restore state even if an error is thrown mid-export
+    let _captureActive = false
+    const _prevTab = tab
+    try {
+      const [{ default: jsPDF }] = await Promise.all([
+        import('jspdf'),
+      ])
+
+      const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' })
+      const pageW = doc.internal.pageSize.getWidth()
+      const pageH = doc.internal.pageSize.getHeight()
+      const margin = 14
+      const contentW = pageW - margin * 2
+      let y = margin
+
+      // ── Helper: add a section heading ──────────────────────────────────────
+      function heading(text) {
+        doc.setFontSize(11)
+        doc.setFont('helvetica', 'bold')
+        doc.setTextColor(79, 70, 229) // indigo-600
+        doc.text(text, margin, y)
+        y += 6
+        doc.setDrawColor(200, 200, 255)
+        doc.setLineWidth(0.3)
+        doc.line(margin, y, margin + contentW, y)
+        y += 4
+      }
+
+      // ── Helper: add key-value row ──────────────────────────────────────────
+      function kv(label, value) {
+        doc.setFontSize(9)
+        doc.setFont('helvetica', 'bold')
+        doc.setTextColor(80, 80, 80)
+        doc.text(`${label}:`, margin, y)
+        doc.setFont('helvetica', 'normal')
+        doc.setTextColor(30, 30, 30)
+        doc.text(String(value ?? '—'), margin + 40, y)
+        y += 5
+      }
+
+      // ── Helper: maybe add a new page ───────────────────────────────────────
+      function checkPage(needed = 20) {
+        if (y + needed > pageH - margin) { doc.addPage(); y = margin }
+      }
+
+      // ── Page 1: Title ──────────────────────────────────────────────────────
+      doc.setFontSize(18)
+      doc.setFont('helvetica', 'bold')
+      doc.setTextColor(30, 30, 30)
+      doc.text('pySAR Encoding Report', margin, y)
+      y += 8
+      doc.setFontSize(9)
+      doc.setFont('helvetica', 'normal')
+      doc.setTextColor(120, 120, 120)
+      doc.text(`Generated ${new Date().toLocaleString()}`, margin, y)
+      y += 10
+
+      // ── Job metadata ───────────────────────────────────────────────────────
+      heading('Job Summary')
+      kv('Job ID',    job?.job_id?.slice(0, 16) ?? '—')
+      kv('Strategy',  job?.strategy ?? '—')
+      kv('Algorithm', job?.algorithm ?? '—')
+      kv('Models',    results?.length ?? 0)
+      y += 4
+
+      // ── Dataset summary (optional) ─────────────────────────────────────────
+      if (opts.includeDataset && dataset) {
+        checkPage(30)
+        heading('Dataset Summary')
+        kv('File',          dataset.filename ?? '—')
+        kv('Rows',          dataset.num_rows ?? '—')
+        kv('Columns',       (dataset.columns ?? []).length)
+        kv('Sequence col',  dataset.seq_col ?? '—')
+        kv('Activity col',  dataset.act_col ?? '—')
+        if (dataset.length_stats) {
+          kv('Seq len (mean)', dataset.length_stats.mean?.toFixed(1) ?? '—')
+          kv('Seq len (range)', `${dataset.length_stats.min ?? '?'} – ${dataset.length_stats.max ?? '?'}`)
+        }
+        if (dataset.activity_stats) {
+          kv('Activity mean', dataset.activity_stats.mean?.toFixed(4) ?? '—')
+          kv('Activity std',  dataset.activity_stats.std?.toFixed(4)  ?? '—')
+        }
+        y += 4
+      }
+
+      // ── Best model ─────────────────────────────────────────────────────────
+      if (best) {
+        heading('Best Model')
+        kv('Model',         modelId(best, resultColumns ?? []))
+        METRIC_COLS.filter((m) => best[m] != null).forEach((m) => {
+          kv(m, typeof best[m] === 'number' ? best[m].toFixed(4) : best[m])
+        })
+        y += 4
+      }
+
+      // ── Results table (all rows or top-N depending on opts) ─────────────────
+      checkPage(40)
+      const tableLimit = opts.allResults ? (results?.length ?? 0) : opts.topN
+      heading(opts.allResults ? `All ${results?.length ?? 0} Results` : `Top ${opts.topN} Results`)
+      const tableCols = (resultColumns ?? []).slice(0, 7) // cap columns to fit page
+      const tableRows = (results ?? []).slice(0, tableLimit)
+
+      // Give the identifier (non-metric) column proportionally more space so
+      // long descriptor names are not cut off. Metric columns share the remainder equally.
+      const identifierIdx = tableCols.findIndex((c) => !METRIC_COLS.includes(c) && c !== 'Rank_Pct')
+      const metricCount   = tableCols.length - (identifierIdx >= 0 ? 1 : 0)
+      const identifierW   = identifierIdx >= 0 ? Math.min(contentW * 0.42, 72) : 0
+      const metricW       = metricCount > 0 ? (contentW - identifierW) / metricCount : contentW / tableCols.length
+      const colWidths     = tableCols.map((_, ci) => ci === identifierIdx ? identifierW : metricW)
+      // Pre-compute cumulative x offsets for each column
+      const colX = tableCols.map((_, ci) => margin + colWidths.slice(0, ci).reduce((s, w) => s + w, 0))
+
+      // Table header
+      doc.setFontSize(8)
+      doc.setFont('helvetica', 'bold')
+      doc.setFillColor(238, 238, 253) // indigo-50
+      doc.rect(margin, y, contentW, 6, 'F')
+      tableCols.forEach((col, ci) => {
+        doc.setTextColor(79, 70, 229)
+        // Truncate header to fit its column width
+        const headerTxt = doc.splitTextToSize(col, colWidths[ci] - 2)[0]
+        doc.text(headerTxt, colX[ci] + 1, y + 4.5)
+      })
+      y += 6
+
+      // Table rows
+      doc.setFont('helvetica', 'normal')
+      tableRows.forEach((row, ri) => {
+        checkPage(6)
+        if (ri % 2 === 0) {
+          doc.setFillColor(249, 249, 249)
+          doc.rect(margin, y, contentW, 5.5, 'F')
+        }
+        tableCols.forEach((col, ci) => {
+          const val = row[col]
+          const txt = typeof val === 'number' ? val.toFixed(4) : String(val ?? '')
+          doc.setTextColor(30, 30, 30)
+          doc.setFontSize(7.5)
+          // Use splitTextToSize so the cell width — not a fixed char count — governs truncation
+          const cellTxt = doc.splitTextToSize(txt, colWidths[ci] - 2)[0]
+          doc.text(cellTxt, colX[ci] + 1, y + 4)
+        })
+        y += 5.5
+      })
+      y += 6
+
+      // ── Descriptive statistics table (optional) ────────────────────────────
+      if (opts.includeStats && statsTable.length > 0) {
+        checkPage(40)
+        heading('Descriptive Statistics')
+        const statCols = ['Metric', 'Count', 'Mean', 'Std', 'Min', 'P25', 'Median', 'P75', 'Max']
+        const statKeys = ['metric', 'count', 'mean', 'std', 'min', 'p25', 'median', 'p75', 'max']
+        const sColW = contentW / statCols.length
+        doc.setFontSize(7.5)
+        doc.setFont('helvetica', 'bold')
+        doc.setFillColor(238, 238, 253)
+        doc.rect(margin, y, contentW, 6, 'F')
+        statCols.forEach((col, ci) => {
+          doc.setTextColor(79, 70, 229)
+          doc.text(col, margin + ci * sColW + 1, y + 4.5)
+        })
+        y += 6
+        doc.setFont('helvetica', 'normal')
+        statsTable.forEach((row, ri) => {
+          checkPage(6)
+          if (ri % 2 === 0) { doc.setFillColor(249, 249, 249); doc.rect(margin, y, contentW, 5.5, 'F') }
+          statKeys.forEach((key, ci) => {
+            doc.setTextColor(30, 30, 30)
+            doc.setFontSize(7.5)
+            doc.text(String(row[key] ?? '—'), margin + ci * sColW + 1, y + 4)
+          })
+          y += 5.5
+        })
+        y += 6
+      }
+
+      // ── Config snapshot (optional) ──────────────────────────────────────────
+      if (opts.includeSnapshot) {
+        checkPage(40)
+        heading('Config Snapshot')
+        const m = config?.model ?? {}
+        kv('Algorithm',  m.algorithm)
+        kv('Test split', m.test_split)
+        kv('CV',         m.use_cv ? `${m.cv_folds}-fold` : 'holdout')
+        kv('DSP',        config?.pyDSP?.use_dsp ? `${config.pyDSP.spectrum} / ${config.pyDSP.window?.type}` : 'disabled')
+        y += 4
+      }
+
+      // ── Encoding parameters (optional) ─────────────────────────────────────
+      if (opts.includeEncoding && encoding) {
+        checkPage(40)
+        heading('Encoding Parameters')
+        kv('Strategy',    encoding.strategy ?? '—')
+        kv('Sort by',     encoding.sort_by ?? '—')
+        kv('Desc combo',  encoding.desc_combo ?? '—')
+        kv('n_jobs',      encoding.n_jobs ?? '—')
+        kv('Max models',  encoding.max_models || 'unlimited')
+        kv('Sample mode', encoding.sample_mode ? 'yes' : 'no')
+        kv('Random seed', encoding.random_state || 'none')
+        // AAI indices — potentially long, so wrap
+        doc.setFontSize(9)
+        doc.setFont('helvetica', 'bold')
+        doc.setTextColor(80, 80, 80)
+        doc.text('AAI indices:', margin, y)
+        doc.setFont('helvetica', 'normal')
+        doc.setTextColor(30, 30, 30)
+        const idxList = (encoding.aai_indices ?? []).length ? encoding.aai_indices.join(', ') : 'all'
+        const idxLines = doc.splitTextToSize(idxList, contentW - 40)
+        doc.text(idxLines, margin + 40, y)
+        y += 4.5 * idxLines.length
+        // Descriptors
+        doc.setFont('helvetica', 'bold')
+        doc.setTextColor(80, 80, 80)
+        doc.text('Descriptors:', margin, y)
+        doc.setFont('helvetica', 'normal')
+        doc.setTextColor(30, 30, 30)
+        const descList = (encoding.selected_descriptors ?? []).length ? encoding.selected_descriptors.join(', ') : 'all'
+        const descLines = doc.splitTextToSize(descList, contentW - 40)
+        doc.text(descLines, margin + 40, y)
+        y += 4.5 * descLines.length + 4
+      }
+
+      // ── Appendix (charts and/or full config — both optional) ──────────────
+      const showAppendix = opts.includeCharts || opts.includeAppendix
+      if (showAppendix) {
+        doc.addPage()
+        y = margin
+        heading('Appendix')
+      }
+
+      // ── A.1 Charts (optional) ─────────────────────────────────────────────
+      let appendixIdx = 1 // section counter for A.1, A.2 …
+      if (opts.includeCharts) {
+        // Disable Recharts entry animations so charts render at their final state immediately.
+        _captureActive = true
+        setIsPdfCapturing(true)
+        // Switch to the charts tab so the SVGs are mounted in the DOM.
+        setTab('charts')
+
+        // Poll until Recharts has fully rendered data into every recharts-surface SVG.
+        // ResponsiveContainer measures its container after mount (async). We wait until:
+        //  - SVGs have a non-zero width attribute (ResponsiveContainer has measured)
+        //  - SVGs contain drawn shapes (path[d] or rect with positive height/width)
+        // Animations are already disabled via isAnimationActive={false}, so shapes
+        // appear at their final state on the very first render after measurement.
+        await new Promise((resolve) => {
+          const deadline = Date.now() + 5000
+          const check = () => {
+            const section = document.getElementById('results-charts-section')
+            if (!section) { requestAnimationFrame(check); return }
+            const svgs = Array.from(section.querySelectorAll('svg.recharts-surface'))
+            const allReady = svgs.length > 0 && svgs.every((svg) => {
+              // Ensure ResponsiveContainer has given the SVG real dimensions
+              const svgW = parseFloat(svg.getAttribute('width')) || 0
+              if (svgW <= 0) return false
+              // Ensure data has been drawn: paths (line/scatter/pie) or rects (bars)
+              const hasPaths = svg.querySelectorAll('path[d]').length > 0
+              const hasRects = Array.from(svg.querySelectorAll('rect')).some(
+                (r) => parseFloat(r.getAttribute('height')) > 0
+              )
+              return hasPaths || hasRects
+            })
+            if (allReady || Date.now() > deadline) resolve()
+            else requestAnimationFrame(check)
+          }
+          requestAnimationFrame(check)
+        })
+
+        const chartsEl = document.getElementById('results-charts-section')
+        if (chartsEl) {
+          checkPage(20)
+          doc.setFontSize(9.5)
+          doc.setFont('helvetica', 'bold')
+          doc.setTextColor(60, 60, 60)
+          doc.text(`A.${appendixIdx}  Charts`, margin, y)
+          appendixIdx += 1
+          y += 7
+
+          // Serialize each SVG element to a canvas.
+          // html2canvas cannot reliably capture Recharts SVGs — use the native
+          // SVG serialization approach instead (same as the per-chart PNG export).
+          const svgToCanvas = (svgEl) => new Promise((resolve) => {
+            // Prefer the Recharts-set width/height attributes over getBoundingClientRect,
+            // since BoundingClientRect can be unreliable when elements are obscured by the modal.
+            const w = parseInt(svgEl.getAttribute('width'))  || Math.round(svgEl.getBoundingClientRect().width)  || 800
+            const h = parseInt(svgEl.getAttribute('height')) || Math.round(svgEl.getBoundingClientRect().height) || 400
+            const clone = svgEl.cloneNode(true)
+            clone.setAttribute('width',  w)
+            clone.setAttribute('height', h)
+            clone.setAttribute('style',  'background:#fff')
+            const svgStr = new XMLSerializer().serializeToString(clone)
+            const blob   = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' })
+            const url    = URL.createObjectURL(blob)
+            const img    = new Image()
+            img.onload = () => {
+              const scale  = 2
+              const canvas = document.createElement('canvas')
+              canvas.width  = w * scale
+              canvas.height = h * scale
+              const ctx = canvas.getContext('2d')
+              ctx.fillStyle = '#ffffff'
+              ctx.fillRect(0, 0, canvas.width, canvas.height)
+              ctx.scale(scale, scale)
+              ctx.drawImage(img, 0, 0, w, h)
+              URL.revokeObjectURL(url)
+              resolve(canvas)
+            }
+            img.onerror = () => { URL.revokeObjectURL(url); resolve(null) }
+            img.src = url
+          })
+
+          // Iterate over each chart card: add title then SVG image to PDF
+          const cards = Array.from(chartsEl.querySelectorAll('.card'))
+          for (const card of cards) {
+            const titleEl = card.querySelector('h3')
+            // Target the Recharts SVG specifically (class="recharts-surface"),
+            // not the icon SVGs in the export dropdown button.
+            const svgEl   = card.querySelector('svg.recharts-surface')
+            if (!svgEl) continue
+            const canvas  = await svgToCanvas(svgEl)
+            if (!canvas) continue
+            const imgH    = (canvas.height / canvas.width) * contentW
+            checkPage(imgH + 12)
+            // Chart title
+            if (titleEl?.textContent?.trim()) {
+              doc.setFontSize(8.5)
+              doc.setFont('helvetica', 'bold')
+              doc.setTextColor(80, 80, 80)
+              doc.text(titleEl.textContent.trim(), margin, y)
+              y += 5
+            }
+            doc.addImage(canvas.toDataURL('image/png'), 'PNG', margin, y, contentW, imgH)
+            y += imgH + 6
+          }
+        }
+        // Restore the tab the user was on before export and re-enable animations
+        setIsPdfCapturing(false)
+        setTab(_prevTab)
+        _captureActive = false
+        y += 6
+      }
+
+      // ── A.N Full configuration parameters (optional) ──────────────────────
+      if (opts.includeAppendix) {
+        // Always start config on a fresh page, even if space remains after charts
+        doc.addPage()
+        y = margin
+        doc.setFontSize(9.5)
+        doc.setFont('helvetica', 'bold')
+        doc.setTextColor(60, 60, 60)
+        doc.text(`A.${appendixIdx}  Full Configuration`, margin, y)
+        y += 7
+
+      // Helper: render a labelled subsection of flat key→value pairs
+      function configSection(label, obj) {
+        if (!obj || typeof obj !== 'object') return
+        checkPage(14)
+        doc.setFontSize(9)
+        doc.setFont('helvetica', 'bold')
+        doc.setTextColor(60, 60, 60)
+        doc.text(label, margin, y)
+        y += 5
+        doc.setFontSize(8)
+        doc.setFont('helvetica', 'normal')
+        Object.entries(obj).forEach(([k, v]) => {
+          checkPage(5)
+          const valStr = v === null || v === undefined
+            ? '—'
+            : Array.isArray(v)
+              ? (v.length === 0 ? '[]' : v.join(', '))
+              : typeof v === 'object'
+                ? JSON.stringify(v)
+                : String(v)
+          doc.setTextColor(100, 100, 100)
+          doc.text(`${k}:`, margin + 2, y)
+          doc.setTextColor(30, 30, 30)
+          const lines = doc.splitTextToSize(valStr, contentW - 44)
+          doc.text(lines, margin + 44, y)
+          y += 4.5 * lines.length
+        })
+        y += 3
+      }
+
+      const cfg = config ?? {}
+      configSection('Model', cfg.model)
+      configSection('DSP', cfg.pyDSP)
+
+      // Descriptors — one indented block per descriptor
+      const descs = cfg.descriptors ?? {}
+      if (Object.keys(descs).length > 0) {
+        checkPage(14)
+        doc.setFontSize(9)
+        doc.setFont('helvetica', 'bold')
+        doc.setTextColor(60, 60, 60)
+        doc.text('Descriptors', margin, y)
+        y += 5
+        Object.entries(descs).forEach(([name, params]) => {
+          if (!params || typeof params !== 'object') return
+          checkPage(10)
+          doc.setFontSize(8)
+          doc.setFont('helvetica', 'bold')
+          doc.setTextColor(79, 70, 229)
+          doc.text(name, margin + 2, y)
+          y += 4.5
+          doc.setFont('helvetica', 'normal')
+          Object.entries(params).forEach(([k, v]) => {
+            checkPage(5)
+            const valStr = v === null || v === undefined
+              ? '—'
+              : Array.isArray(v)
+                ? (v.length === 0 ? '[]' : v.join(', '))
+                : String(v)
+            doc.setTextColor(100, 100, 100)
+            doc.text(`${k}:`, margin + 6, y)
+            doc.setTextColor(30, 30, 30)
+            const lines = doc.splitTextToSize(valStr, contentW - 50)
+            doc.text(lines, margin + 50, y)
+            y += 4.5 * lines.length
+          })
+          y += 2
+        })
+      }
+      } // end if (opts.includeAppendix)
+
+      doc.save(`pysar_report_${new Date().toISOString().slice(0, 10)}.pdf`)
+      toast.success('PDF saved', { id: 'pdf' })
+    } catch (err) {
+      console.error('PDF export failed:', err)
+      toast.error('PDF export failed — see console for details', { id: 'pdf' })
+    } finally {
+      // Always restore chart tab and re-enable animations, even if the export threw
+      if (_captureActive) {
+        setIsPdfCapturing(false)
+        setTab(_prevTab)
+      }
+    }
   }
 
   // ── "Use this model" — pre-fills Step 3 with sole this index/descriptor ───
@@ -283,6 +751,11 @@ export default function Step4Results() {
                   {modelId(best, resultColumns ?? [])}
                 </p>
                 {best.Category && <span className="badge-indigo">{best.Category}</span>}
+                {job?.algorithm && (
+                  <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+                    {job.algorithm}
+                  </span>
+                )}
               </div>
               <div className="flex flex-wrap gap-4 mt-2 text-sm text-gray-600 dark:text-gray-300">
                 {METRIC_COLS.map((m) => best[m] != null && (
@@ -394,6 +867,9 @@ export default function Step4Results() {
           <button className="btn-secondary text-xs" onClick={handleExportJSON}>
             <ArrowDownTrayIcon className="w-3.5 h-3.5" /> JSON
           </button>
+          <button className="btn-secondary text-xs" onClick={() => setShowPdfModal(true)} title="Customise and download PDF report">
+            <ArrowDownTrayIcon className="w-3.5 h-3.5" /> PDF Report
+          </button>
 
         </div>
       </div>
@@ -408,7 +884,7 @@ export default function Step4Results() {
               <div className="relative">
                 <MagnifyingGlassIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
                 <input
-                  className="input text-xs w-56 pl-7"
+                  className="input text-xs w-56 !pl-8"
                   placeholder="Filter results…"
                   value={filterText}
                   onChange={(e) => { setFilterText(e.target.value); setPage(0) }}
@@ -690,7 +1166,15 @@ export default function Step4Results() {
       )}
 
       {/* ── Charts tab ── */}
-      {tab === 'charts' && <ResultsCharts rows={rows} columns={resultColumns} />}
+      {tab === 'charts' && (
+        <div id="results-charts-section" className="space-y-5">
+          {/* Predicted vs Actual — shown when backend returns best-model predictions */}
+          {job?.best_model_predictions?.actual?.length > 0 && (
+            <PredictedActualChart predictions={job.best_model_predictions} disableAnimation={isPdfCapturing} />
+          )}
+          <ResultsCharts rows={rows} columns={resultColumns} disableAnimation={isPdfCapturing} />
+        </div>
+      )}
 
       {/* ── Statistics tab ── */}
       {tab === 'stats' && (
@@ -835,6 +1319,161 @@ export default function Step4Results() {
           <ArrowLeftIcon className="w-4 h-4" /> Back
         </button>
       </div>
+
+      {/* ── PDF export options modal ── */}
+      {showPdfModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          {/* Backdrop */}
+          <div className="absolute inset-0 bg-black/50" onClick={() => setShowPdfModal(false)} />
+          <div className="relative bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-6 w-full max-w-md mx-4">
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-base font-bold text-gray-900 dark:text-white">PDF Export Options</h2>
+              <button onClick={() => setShowPdfModal(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+
+              {/* Results rows */}
+              <div>
+                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">Results Table</p>
+                <label className="flex items-start gap-3 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 accent-indigo-600"
+                    checked={pdfOptions.allResults}
+                    onChange={() => togglePdfOpt('allResults')}
+                  />
+                  <span className="text-sm text-gray-700 dark:text-gray-300">
+                    <span className="font-medium">Export all encoding results</span>
+                    {results?.length != null && (
+                      <span className="ml-1.5 px-1.5 py-0.5 rounded text-xs font-medium bg-indigo-50 text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-300">
+                        {results.length.toLocaleString()}
+                      </span>
+                    )}
+                    <span className="text-gray-400 dark:text-gray-500 ml-1">(default: top {pdfOptions.topN} only)</span>
+                  </span>
+                </label>
+                {!pdfOptions.allResults && (
+                  <div className="mt-2 ml-7 flex items-center gap-2">
+                    <span className="text-xs text-gray-500 dark:text-gray-400">Show top</span>
+                    {[10, 25, 50].map((n) => (
+                      <button
+                        key={n}
+                        onClick={() => setPdfOptions((o) => ({ ...o, topN: n }))}
+                        className={`px-2.5 py-0.5 rounded text-xs font-medium border transition-colors ${
+                          pdfOptions.topN === n
+                            ? 'bg-indigo-600 border-indigo-600 text-white'
+                            : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-indigo-400'
+                        }`}
+                      >
+                        {n}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Appendix items */}
+              <div>
+                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">Appendix</p>
+                <div className="space-y-2">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 accent-indigo-600"
+                      checked={pdfOptions.includeCharts}
+                      onChange={() => togglePdfOpt('includeCharts')}
+                    />
+                    <span className="text-sm text-gray-700 dark:text-gray-300">
+                      <span className="font-medium">Include result charts</span>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 accent-indigo-600"
+                      checked={pdfOptions.includeAppendix}
+                      onChange={() => togglePdfOpt('includeAppendix')}
+                    />
+                    <span className="text-sm text-gray-700 dark:text-gray-300">
+                      <span className="font-medium">Include full config parameters</span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Main body options */}
+              <div>
+                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">Sections</p>
+                <div className="space-y-2">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 accent-indigo-600"
+                      checked={pdfOptions.includeDataset}
+                      onChange={() => togglePdfOpt('includeDataset')}
+                    />
+                    <span className="text-sm text-gray-700 dark:text-gray-300">
+                      <span className="font-medium">Include dataset summary</span>
+                      <span className="text-gray-400 dark:text-gray-500 ml-1">(filename, rows, columns, activity stats)</span>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 accent-indigo-600"
+                      checked={pdfOptions.includeStats}
+                      onChange={() => togglePdfOpt('includeStats')}
+                    />
+                    <span className="text-sm text-gray-700 dark:text-gray-300">
+                      <span className="font-medium">Include descriptive statistics</span>
+                      <span className="text-gray-400 dark:text-gray-500 ml-1">(mean, std, min, P25, median, P75, max per metric)</span>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 accent-indigo-600"
+                      checked={pdfOptions.includeEncoding}
+                      onChange={() => togglePdfOpt('includeEncoding')}
+                    />
+                    <span className="text-sm text-gray-700 dark:text-gray-300">
+                      <span className="font-medium">Include encoding parameters</span>
+                      <span className="text-gray-400 dark:text-gray-500 ml-1">(strategy, indices, descriptors, seed)</span>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 accent-indigo-600"
+                      checked={pdfOptions.includeSnapshot}
+                      onChange={() => togglePdfOpt('includeSnapshot')}
+                    />
+                    <span className="text-sm text-gray-700 dark:text-gray-300">
+                      <span className="font-medium">Include config snapshot</span>
+                      <span className="text-gray-400 dark:text-gray-500 ml-1">(brief summary: algorithm, CV, DSP)</span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Actions */}
+            <div className="flex justify-end gap-2 mt-6">
+              <button className="btn-secondary text-sm" onClick={() => setShowPdfModal(false)}>Cancel</button>
+              <button
+                className="btn-primary text-sm"
+                onClick={() => { setShowPdfModal(false); handleExportPDF(pdfOptions) }}
+              >
+                <ArrowDownTrayIcon className="w-4 h-4" /> Generate PDF
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
