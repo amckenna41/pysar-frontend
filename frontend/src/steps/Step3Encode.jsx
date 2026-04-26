@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { logLineClass, estimateModels, snakeToTitle } from '../utils/encoding'
 import {
   BoltIcon,
@@ -68,6 +68,7 @@ export default function Step3Encode() {
     pendingRerun, clearPendingRerun,
     encodingQueue, addToQueue, shiftQueue, removeFromQueue, clearQueue,
     aaiIndicesCache, setAaiIndicesCache,
+    backendOnline, setBackendOnline,
   } = useAppStore()
 
   // ── Existing state ────────────────────────────────────────────────────────
@@ -76,6 +77,8 @@ export default function Step3Encode() {
   const [aaiSearch, setAaiSearch] = useState('')
   const [aaiSearchDebounced, setAaiSearchDebounced] = useState('')
   const [aaiDropdownOpen, setAaiDropdownOpen] = useState(false)
+  const [aaiChipsExpanded, setAaiChipsExpanded] = useState(false)
+  const AAI_CHIP_COLLAPSE_THRESHOLD = 5
   const [allAaiRecords, setAllAaiRecords] = useState([])
   // Descriptor names fetched from backend rather than hardcoded
   const [allDescriptorKeys, setAllDescriptorKeys] = useState([])
@@ -85,31 +88,33 @@ export default function Step3Encode() {
 
   // ── Fetch descriptor catalogue names from backend on mount ────────────────
   useEffect(() => {
-    getDescriptors()
+    getDescriptors(backendOnline)
       .then((data) => setAllDescriptorKeys((data ?? []).map((d) => d.name).sort()))
       .catch(() => {})
-  }, [])
+  }, [backendOnline])
 
-  // ── Backend availability check ────────────────────────────────────────────
-  useEffect(() => {
-    checkBackend().then(setBackendAvailable)
-  }, [])
-
-  // ── New UI state ──────────────────────────────────────────────────────────
+  // ── New UI state ─────────────────────────────────────────────────────
+  // backendAvailable mirrors the store's backendOnline flag (null = checking)
+  const backendAvailable = backendOnline
+  // Whether the "run locally" instructions panel is expanded
+  const [showLocalRunSteps, setShowLocalRunSteps] = useState(false)
+  // Re-probe backend and update store; used by the "Check again" button
+  const recheckBackend = useCallback(() => {
+    setBackendOnline(null)
+    checkBackend().then(setBackendOnline)
+  }, [setBackendOnline])
   const [showDryRun, setShowDryRun]               = useState(false)
   const [showConfigSnapshot, setShowConfigSnapshot] = useState(false)
   const [useResume, setUseResume]                 = useState(false)
   // Dismissed warning keys (e.g. 'bigJob', 'descLag')
   const [dismissedWarnings, setDismissedWarnings]   = useState(new Set())
-  // null = checking, true = reachable, false = unreachable
-  const [backendAvailable, setBackendAvailable]     = useState(null)
 
   // ── Fetch AAI records once; use in-store cache to avoid repeat requests ─────
   useEffect(() => {
     if (encoding.strategy !== 'aai' && encoding.strategy !== 'aai_descriptor') return
     if (allAaiRecords.length > 0) return
     if (aaiIndicesCache.length > 0) { setAllAaiRecords(aaiIndicesCache); return }
-    getAaiIndicesFull().then((data) => {
+    getAaiIndicesFull(backendOnline).then((data) => {
       setAllAaiRecords(data)
       setAaiIndicesCache(data) // persist in store for subsequent opens
     }).catch(() => {})
@@ -381,8 +386,16 @@ export default function Step3Encode() {
   // ── Submit job ────────────────────────────────────────────────────────────
   async function handleRun() {
     if (!dataset) { toast.error('No dataset loaded'); return }
-    // Guard: encoding requires the backend — surface clearly rather than mid-op failure
-    if (backendAvailable === false) { toast.error('Backend not connected — deploy the backend and set VITE_API_URL'); return }
+    // Guard: encoding requires the backend — surface clearly rather than mid-op failure.
+    // backendAvailable is null while the health check is still in flight, false if confirmed offline.
+    if (backendAvailable !== true) {
+      toast.error(
+        backendAvailable === null
+          ? 'Checking backend status — please wait a moment and try again'
+          : 'Backend not connected — start it locally or deploy and set VITE_API_URL',
+      )
+      return
+    }
     // Validate required columns are selected
     if (!dataset.seq_col) { toast.error('Select a sequence column in Step 1 first'); return }
     if (!dataset.act_col) { toast.error('Select an activity column in Step 1 first'); return }
@@ -489,17 +502,52 @@ export default function Step3Encode() {
     <div className="max-w-3xl mx-auto space-y-6">
       {/* ── Backend unavailable banner ── */}
       {backendAvailable === false && (
-        <div className="flex gap-3 items-start rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-600 p-4 text-sm">
-          <svg className="w-5 h-5 shrink-0 text-amber-500 mt-0.5" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
-          </svg>
-          <div>
-            <p className="font-semibold text-amber-800 dark:text-amber-200">Backend not connected</p>
-            <p className="text-amber-700 dark:text-amber-300 mt-0.5">
-              Encoding requires the pySAR backend. Deploy it to Railway, Render, or Fly.io and set the{' '}
-              <code className="font-mono text-xs bg-amber-100 dark:bg-amber-800 px-1 rounded">VITE_API_URL</code>{' '}
-              environment variable in Vercel, or run the backend locally.
-            </p>
+        <div className="rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-600 p-4 text-sm">
+          <div className="flex gap-3 items-start">
+            <svg className="w-5 h-5 shrink-0 text-amber-500 mt-0.5" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+            </svg>
+            <div className="flex-1">
+              <p className="font-semibold text-amber-800 dark:text-amber-200">Backend not connected</p>
+              <p className="text-amber-700 dark:text-amber-300 mt-0.5">
+                Encoding requires the pySAR backend to be running. Do you want to run the backend locally?
+              </p>
+              <div className="flex flex-wrap gap-2 mt-3">
+                <button
+                  onClick={() => setShowLocalRunSteps((v) => !v)}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-amber-200 dark:bg-amber-700 hover:bg-amber-300 dark:hover:bg-amber-600 text-amber-900 dark:text-amber-100 px-3 py-1.5 font-medium transition-colors"
+                >
+                  {showLocalRunSteps ? 'Hide instructions' : 'Yes — show me how'}
+                </button>
+                <button
+                  onClick={recheckBackend}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 dark:border-amber-600 hover:bg-amber-100 dark:hover:bg-amber-800 text-amber-800 dark:text-amber-300 px-3 py-1.5 font-medium transition-colors"
+                >
+                  <ArrowPathIcon className="w-4 h-4" />
+                  Check again
+                </button>
+              </div>
+              {showLocalRunSteps && (
+                <div className="mt-4 space-y-2 text-amber-800 dark:text-amber-200">
+                  <p className="font-medium">Run the backend locally in 3 steps:</p>
+                  <ol className="list-decimal list-inside space-y-2 text-amber-700 dark:text-amber-300">
+                    <li>
+                      Install dependencies (once):
+                      <pre className="mt-1 rounded-lg bg-amber-100 dark:bg-amber-900 px-3 py-2 font-mono text-xs overflow-x-auto">pip install -r requirements.txt</pre>
+                    </li>
+                    <li>
+                      Start the backend + frontend together:
+                      <pre className="mt-1 rounded-lg bg-amber-100 dark:bg-amber-900 px-3 py-2 font-mono text-xs overflow-x-auto">./start.sh</pre>
+                      <p className="text-xs mt-1">Or start the backend only:</p>
+                      <pre className="mt-1 rounded-lg bg-amber-100 dark:bg-amber-900 px-3 py-2 font-mono text-xs overflow-x-auto">uvicorn backend.main:app --reload --port 8000</pre>
+                    </li>
+                    <li>
+                      Once it's running, click <strong>Check again</strong> above — the banner will disappear and encoding will be enabled.
+                    </li>
+                  </ol>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -558,8 +606,8 @@ export default function Step3Encode() {
                 className="input min-h-[2.5rem] flex flex-wrap gap-1.5 p-1.5 cursor-text"
                 onClick={() => searchRef.current?.focus()}
               >
-                {/* Selected chips — with hover tooltip showing the index title */}
-                {selectedAaiIndices.map((code) => {
+                {/* Selected chips — collapsed to first 5 unless expanded */}
+                {(aaiChipsExpanded ? selectedAaiIndices : selectedAaiIndices.slice(0, AAI_CHIP_COLLAPSE_THRESHOLD)).map((code) => {
                   const title = aaiIndexMap[code]
                   return (
                     <span key={code} className="relative group/chip">
@@ -583,6 +631,18 @@ export default function Step3Encode() {
                     </span>
                   )
                 })}
+                {/* Collapse / expand toggle when > threshold chips */}
+                {selectedAaiIndices.length > AAI_CHIP_COLLAPSE_THRESHOLD && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setAaiChipsExpanded((v) => !v) }}
+                    className="inline-flex items-center gap-0.5 text-xs font-mono px-2 py-0.5 rounded bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors shrink-0"
+                  >
+                    {aaiChipsExpanded
+                      ? `▲ collapse`
+                      : `+${selectedAaiIndices.length - AAI_CHIP_COLLAPSE_THRESHOLD} more`}
+                  </button>
+                )}
 
                 {/* Search input */}
                 <input

@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- **Progress connector in sidebar nav** — a thin vertical line now connects adjacent step badges in the sidebar, coloured green when the step is completed and gray otherwise, giving a clear visual trail through the workflow.
+- **Always-visible mobile bottom tab bar** — on small screens a fixed bottom navigation bar shows the step icon and number at all times, replacing the "nothing visible until hamburger tapped" behaviour. The full sidebar still slides in from the hamburger button.
+- **Upload skeleton** — while a file is uploading or processing, an animated pulse skeleton (column picker, stats grid, preview table rows) occupies the post-upload area so the layout does not jump when the real content arrives.
+- **AAI chip collapse** — when more than 5 indices are selected the chip row collapses to the first 5 with a `+N more` badge; clicking expands all chips and a `▲ collapse` button contracts them again.
+
+### Changed
+- **Toasts moved to `bottom-center`** — `react-hot-toast` notifications now appear at the bottom-centre of the viewport instead of the top-right, reducing interference with the sidebar and header.
+
 ### Fixed
 - **`@vitest/coverage-v8` version bump** — updated `vitest` and `@vitest/coverage-v8` in `frontend/package.json` from `^2.2.5` to `^3.0.0`. Version `2.2.5` was never published (the `2.x` line only reached `2.1.9`), causing Vercel builds to fail with `npm error notarget No matching version found`.
 

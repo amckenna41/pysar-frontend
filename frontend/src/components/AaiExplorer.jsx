@@ -31,7 +31,7 @@ export default function AaiExplorer() {
   const [pageSize, setPageSize] = useState(50)
 
   // Read and update the encoding selection from global store
-  const { encoding, setEncoding } = useAppStore()
+  const { encoding, setEncoding, backendOnline } = useAppStore()
   const selectedIndices = encoding.aai_indices ?? []
 
   // Toggle a single index in/out of the selection
@@ -60,7 +60,7 @@ export default function AaiExplorer() {
     setLoading(true)
     setLoadError(null)
     const tid = setTimeout(() => setLoadError('Failed to load — please retry'), 5000)
-    getAaiIndicesFull()
+    getAaiIndicesFull(backendOnline)
       .then(d => { setRecords(d); clearTimeout(tid) })
       .catch(() => { clearTimeout(tid); setLoadError('Failed to load — please retry') })
       .finally(() => setLoading(false))

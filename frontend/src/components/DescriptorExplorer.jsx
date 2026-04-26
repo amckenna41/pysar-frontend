@@ -111,7 +111,7 @@ export default function DescriptorExplorer() {
   // expandedSet is stored globally so it persists when the panel is closed/reopened
 
   // Read and update the encoding selection from global store
-  const { encoding, setEncoding, config, dataset, descriptorExpandedSet, toggleDescriptorExpanded, setDescriptorExpandedBatch } = useAppStore()
+  const { encoding, setEncoding, config, dataset, descriptorExpandedSet, toggleDescriptorExpanded, setDescriptorExpandedBatch, backendOnline } = useAppStore()
   const selectedDescriptors = encoding.selected_descriptors ?? []
 
   // Param lookup built from DescriptorConfig definitions
@@ -170,7 +170,7 @@ export default function DescriptorExplorer() {
     setLoading(true)
     setLoadError(null)
     const tid = setTimeout(() => setLoadError('Failed to load — please retry'), 5000)
-    getDescriptors()
+    getDescriptors(backendOnline)
       .then(d => { setDescriptors(d); clearTimeout(tid) })
       .catch(() => { clearTimeout(tid); setLoadError('Failed to load — please retry') })
       .finally(() => setLoading(false))

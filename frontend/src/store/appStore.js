@@ -120,6 +120,11 @@ export const useAppStore = create(
     return { darkMode: next }
   }),
 
+  // ── Backend availability (probed once on app mount; not persisted) ──
+  // null = not yet checked, true = reachable, false = unreachable
+  backendOnline: null,
+  setBackendOnline: (v) => set({ backendOnline: v }),
+
   // ── Landing page visibility ──
   showLanding: true,
   enterApp: () => set({ showLanding: false }),

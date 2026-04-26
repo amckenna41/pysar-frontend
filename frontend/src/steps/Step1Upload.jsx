@@ -469,6 +469,39 @@ export default function Step1Upload() {
         </div>
       )}
 
+      {/* ── Upload skeleton — shown while upload/processing is in progress ── */}
+      {uploading && (
+        <div className="card p-5 space-y-4 animate-pulse">
+          {/* Column mapping skeleton */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <div className="h-3 w-32 bg-gray-200 rounded" />
+              <div className="h-9 w-full bg-gray-100 rounded-lg" />
+            </div>
+            <div className="space-y-2">
+              <div className="h-3 w-32 bg-gray-200 rounded" />
+              <div className="h-9 w-full bg-gray-100 rounded-lg" />
+            </div>
+          </div>
+          {/* Stats row skeleton */}
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 pt-2">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="h-14 bg-gray-100 rounded-xl" />
+            ))}
+          </div>
+          {/* Preview table skeleton */}
+          <div className="space-y-2 pt-2">
+            <div className="h-3 w-24 bg-gray-200 rounded" />
+            <div className="rounded-lg border border-gray-100 overflow-hidden">
+              <div className="h-8 bg-gray-100" />
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className={`h-7 ${i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`} />
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Post-upload sections ── */}
       {dataset && (
         <>

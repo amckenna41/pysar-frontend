@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useAppStore } from './store/appStore'
 import Layout from './components/Layout'
 import LandingPage from './components/LandingPage'
@@ -10,6 +11,7 @@ import Step1Upload from './steps/Step1Upload'
 import Step2Configure from './steps/Step2Configure'
 import Step3Encode from './steps/Step3Encode'
 import Step4Results from './steps/Step4Results'
+import { checkBackend } from './utils/api'
 
 const STEPS = {
   1: Step1Upload,
@@ -19,7 +21,13 @@ const STEPS = {
 }
 
 export default function App() {
-  const { step, showLanding, showJobs, showModelExplorer, showAaiExplorer, showDescriptorExplorer } = useAppStore()
+  const { step, showLanding, showJobs, showModelExplorer, showAaiExplorer, showDescriptorExplorer, setBackendOnline } = useAppStore()
+
+  // Probe backend once on mount and cache the result so all components can
+  // skip backend calls immediately and fall back to static assets when offline.
+  useEffect(() => {
+    checkBackend().then(setBackendOnline)
+  }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Show landing page before entering the app
   if (showLanding) return <LandingPage />

@@ -46,6 +46,7 @@ beforeEach(() => {
     showDescriptorExplorer: false,
     aaiIndicesCache: [],
     descriptorExpandedSet: new Set(),
+    backendOnline: null,
   })
 })
 

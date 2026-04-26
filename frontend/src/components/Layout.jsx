@@ -161,6 +161,38 @@ export default function Layout({ children }) {
         />
       )}
 
+      {/* ── Mobile bottom icon bar — always visible on small screens ── */}
+      <nav className="md:hidden fixed bottom-0 inset-x-0 z-30 flex items-center justify-around bg-white border-t border-gray-200 px-2 py-1" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
+        {NAV_STEPS.map(({ id, Icon }) => {
+          const accessible = isAccessible(id)
+          const active = step === id
+          const completed = step > id
+          return (
+            <button
+              key={id}
+              onClick={() => accessible && navToStep(id)}
+              disabled={!accessible}
+              className={[
+                'flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-lg transition-colors',
+                active ? 'text-indigo-600' : completed && accessible ? 'text-green-600' : accessible ? 'text-gray-500' : 'text-gray-300',
+              ].join(' ')}
+              aria-label={`Step ${id}`}
+            >
+              <span className={[
+                'flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold',
+                active ? 'bg-indigo-100' : completed ? 'bg-green-100' : '',
+              ].join(' ')}>
+                {completed ? <CheckCircleIcon className="w-4 h-4" /> : <Icon className="w-4 h-4" />}
+              </span>
+              <span className="text-[10px] font-medium">{id}</span>
+              {id === 3 && jobDoneFlag && (
+                <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-green-500" />
+              )}
+            </button>
+          )
+        })}
+      </nav>
+
       {/* ── Sidebar ── */}
       <aside className={[
         'flex flex-col w-56 shrink-0 border-r border-gray-200 bg-white',
@@ -189,51 +221,60 @@ export default function Layout({ children }) {
         </div>
 
         {/* Step navigation */}
-        <nav className="flex-1 px-3 py-4 space-y-1">
-          {NAV_STEPS.map(({ id, label, Icon }) => {
+        <nav className="flex-1 px-3 py-4">
+          {NAV_STEPS.map(({ id, label, Icon }, idx) => {
             const accessible = isAccessible(id)
             const active = step === id
             const completed = step > id
+            const isLast = idx === NAV_STEPS.length - 1
 
             return (
-              <button
-                key={id}
-                onClick={() => { accessible && navToStep(id) }}
-                disabled={!accessible}
-                className={[
-                  'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
-                  active && completed
-                    ? 'bg-green-50 text-green-700'
-                    : active
-                    ? 'bg-indigo-50 text-indigo-700'
-                    : completed && accessible
-                    ? 'text-gray-700 hover:bg-gray-50'
-                    : accessible
-                    ? 'text-gray-600 hover:bg-gray-50'
-                    : 'text-gray-300 cursor-not-allowed',
-                ].join(' ')}
-              >
-                {/* Step number / check badge */}
-                <span
+              <div key={id} className="relative">
+                {/* Connector line between steps */}
+                {!isLast && (
+                  <div className={[
+                    'absolute left-[22px] top-[2.5rem] w-0.5 h-4 z-0',
+                    completed ? 'bg-green-400' : 'bg-gray-200',
+                  ].join(' ')} />
+                )}
+                <button
+                  onClick={() => { accessible && navToStep(id) }}
+                  disabled={!accessible}
                   className={[
-                    'flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold shrink-0',
+                    'relative z-10 w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors mb-1',
                     active && completed
-                      ? 'bg-green-500 text-white'
+                      ? 'bg-green-50 text-green-700'
                       : active
-                      ? 'bg-indigo-600 text-white'
-                      : completed
-                      ? 'bg-green-500 text-white'
-                      : 'bg-gray-200 text-gray-500',
+                      ? 'bg-indigo-50 text-indigo-700'
+                      : completed && accessible
+                      ? 'text-gray-700 hover:bg-gray-50'
+                      : accessible
+                      ? 'text-gray-600 hover:bg-gray-50'
+                      : 'text-gray-300 cursor-not-allowed',
                   ].join(' ')}
                 >
-                  {completed ? <CheckCircleIcon className="w-4 h-4" /> : id}
-                </span>
-                <span className="truncate">{label}</span>
-                {/* Green dot badge when a job completes while user is on a different step */}
-                {id === 3 && jobDoneFlag && (
-                  <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" title="Job completed" />
-                )}
-              </button>
+                  {/* Step number / check badge */}
+                  <span
+                    className={[
+                      'flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold shrink-0',
+                      active && completed
+                        ? 'bg-green-500 text-white'
+                        : active
+                        ? 'bg-indigo-600 text-white'
+                        : completed
+                        ? 'bg-green-500 text-white'
+                        : 'bg-gray-200 text-gray-500',
+                    ].join(' ')}
+                  >
+                    {completed ? <CheckCircleIcon className="w-4 h-4" /> : id}
+                  </span>
+                  <span className="truncate">{label}</span>
+                  {/* Green dot badge when a job completes while user is on a different step */}
+                  {id === 3 && jobDoneFlag && (
+                    <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" title="Job completed" />
+                  )}
+                </button>
+              </div>
             )
           })}
         </nav>
@@ -347,7 +388,7 @@ export default function Layout({ children }) {
         {showHowTo && <HowToModal onClose={() => setShowHowTo(false)} />}
 
         {/* Page content */}
-        <div className="p-6">{children}</div>
+        <div className="p-6 pb-20 md:pb-6">{children}</div>
       </main>
     </div>
   )

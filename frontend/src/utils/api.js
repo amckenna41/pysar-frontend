@@ -241,18 +241,22 @@ export async function getAaiIndices() {
 /**
  * Fetch all AAI1 records with code + title for the explorer.
  * Falls back to the bundled static JSON if the backend is unreachable.
+ * @param {boolean|null} [backendOnline] - pass the cached availability flag to skip the network call when false
  * @returns {Promise<{code: string, title: string}[]>}
  */
-export async function getAaiIndicesFull() {
-  try {
-    const { data } = await client.get('/aai-indices-full')
-    return data.records
-  } catch {
-    // Backend unavailable — use bundled static fallback
-    const res = await fetch('/aai_indices.json')
-    const data = await res.json()
-    return data.records
+export async function getAaiIndicesFull(backendOnline) {
+  if (backendOnline !== false) {
+    try {
+      const { data } = await client.get('/aai-indices-full')
+      return data.records
+    } catch {
+      // fall through to static fallback
+    }
   }
+  // Backend unavailable — use bundled static fallback
+  const res = await fetch('/aai_indices.json')
+  const data = await res.json()
+  return data.records
 }
 
 /**
@@ -260,16 +264,21 @@ export async function getAaiIndicesFull() {
  * Falls back to the bundled static JSON if the backend is unreachable.
  * @returns {Promise<object[]>}
  */
-export async function getDescriptors() {
-  try {
-    const { data } = await client.get('/descriptors')
-    return data.descriptors
-  } catch {
-    // Backend unavailable — use bundled static fallback
-    const res = await fetch('/descriptors.json')
-    const data = await res.json()
-    return data.descriptors
+export async function getDescriptors(backendOnline) {
+  if (backendOnline !== false) {
+    try {
+      // Short timeout + no retries so the static fallback is reached immediately
+      // when the backend is unavailable (bypass the retry interceptor via _retryCount)
+      const { data } = await client.get('/descriptors', { timeout: 3000, _retryCount: MAX_RETRIES })
+      return data.descriptors
+    } catch {
+      // fall through to static fallback
+    }
   }
+  // Backend unavailable — use bundled static fallback
+  const res = await fetch('/descriptors.json')
+  const data = await res.json()
+  return data.descriptors
 }
 
 // ── Health ─────────────────────────────────────────────────────────────────────
