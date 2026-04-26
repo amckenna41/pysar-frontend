@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **`@vitest/coverage-v8` version bump** — updated `vitest` and `@vitest/coverage-v8` in `frontend/package.json` from `^2.2.5` to `^3.0.0`. Version `2.2.5` was never published (the `2.x` line only reached `2.1.9`), causing Vercel builds to fail with `npm error notarget No matching version found`.
+
+### Changed
+- **Automated Cloud Run → Vercel URL sync** — `cloudbuild.yaml` now has a post-deploy step that automatically propagates the Cloud Run service URL to Vercel as the `VITE_API_URL` environment variable and triggers a Vercel production redeploy via a deploy hook. This eliminates the manual step of copying the Cloud Run URL and pasting it into the Vercel dashboard after each backend deployment. Two secrets (`vercel-token`, `vercel-deploy-hook`) must be stored in GCP Secret Manager and the `_VERCEL_PROJECT_ID` substitution variable set in the Cloud Build trigger.
+
 ### Added
 - **`use_cv` / `cv_folds` wired end-to-end** — cross-validation settings configured in the Model tab are now included in the encode request payload and forwarded to pySAR's model config section via `_build_config`. `EncodeRequest` has two new optional fields: `use_cv: bool = False` and `cv_folds: int = 5`.
 - **`TRUST_PROXY` environment variable** — `_get_client_ip` now only trusts the `X-Forwarded-For` header when `TRUST_PROXY=true` is set in the environment. Previously the header was unconditionally trusted, allowing any client to forge an IP and bypass per-IP rate limiting. Cloud Run / Fly.io deployments should set `TRUST_PROXY=true`; direct-exposure instances leave it unset.

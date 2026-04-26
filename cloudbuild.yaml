@@ -7,6 +7,18 @@ substitutions:
   _SERVICE: pysar-backend
   _REPO: pysar                    # Artifact Registry repository name
   _CORS_ORIGIN: https://pysar-app.vercel.app
+  _VERCEL_PROJECT_ID: ''          # Vercel project ID (Settings → General → Project ID)
+
+availableSecrets:
+  secretManager:
+    # gcloud secrets create vercel-token --data-file=- <<< "<token>"
+    # Token needs: project read/write env var scope (vercel.com/account/tokens)
+    - versionName: projects/$PROJECT_ID/secrets/vercel-token/versions/latest
+      env: VERCEL_TOKEN
+    # gcloud secrets create vercel-deploy-hook --data-file=- <<< "<hook-url>"
+    # Hook URL from: vercel.com/<team>/<project>/settings/git → Deploy Hooks
+    - versionName: projects/$PROJECT_ID/secrets/vercel-deploy-hook/versions/latest
+      env: VERCEL_DEPLOY_HOOK
 
 steps:
   # Create Artifact Registry repo if it doesn't already exist
@@ -53,6 +65,50 @@ steps:
       - --startup-cpu-boost            # extra CPU during cold start to load numpy/scipy faster
       - --cpu-throttling=false        # keep CPU allocated between requests for background encoding threads
       - --set-env-vars=CORS_ORIGIN=$_CORS_ORIGIN
+
+  # Fetch the deployed Cloud Run URL, sync it to Vercel as VITE_API_URL,
+  # then trigger a Vercel production redeploy so the new URL is baked in.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    secretEnv: ['VERCEL_TOKEN', 'VERCEL_DEPLOY_HOOK']
+    args:
+      - -c
+      - |
+        SERVICE_URL=$(gcloud run services describe $_SERVICE \
+          --region=$_REGION --project=$PROJECT_ID \
+          --format='value(status.url)')
+        echo "Cloud Run URL: $SERVICE_URL"
+
+        # Find the existing VITE_API_URL env var ID in Vercel (production target)
+        ENV_ID=$(curl -sf \
+          "https://api.vercel.com/v9/projects/$_VERCEL_PROJECT_ID/env?target=production" \
+          -H "Authorization: Bearer $$VERCEL_TOKEN" | \
+          python3 -c "
+        import sys, json
+        data = json.load(sys.stdin)
+        match = next((e['id'] for e in data.get('envs', []) if e['key'] == 'VITE_API_URL'), '')
+        print(match)
+        ")
+
+        if [ -n "$ENV_ID" ]; then
+          curl -sf -X PATCH \
+            "https://api.vercel.com/v9/projects/$_VERCEL_PROJECT_ID/env/$ENV_ID" \
+            -H "Authorization: Bearer $$VERCEL_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"value\": \"$SERVICE_URL\"}"
+          echo "Updated VITE_API_URL → $SERVICE_URL"
+        else
+          curl -sf -X POST \
+            "https://api.vercel.com/v10/projects/$_VERCEL_PROJECT_ID/env" \
+            -H "Authorization: Bearer $$VERCEL_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"key\": \"VITE_API_URL\", \"value\": \"$SERVICE_URL\", \"type\": \"plain\", \"target\": [\"production\"]}"
+          echo "Created VITE_API_URL → $SERVICE_URL"
+        fi
+
+        # Trigger a new Vercel production build so the updated env var is baked in
+        curl -sf -X POST "$$VERCEL_DEPLOY_HOOK"
+        echo "Vercel redeploy triggered."
 
 images:
   - $_REGION-docker.pkg.dev/$PROJECT_ID/$_REPO/$_SERVICE
