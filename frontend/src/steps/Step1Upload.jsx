@@ -123,6 +123,13 @@ export default function Step1Upload() {
         return
       }
       if (accepted.length === 0) return
+      // Secondary extension guard: react-dropzone matches on MIME type AND extension
+      // together, but on macOS .tsv/.csv files can slip through with text/plain MIME type.
+      const fileExt = accepted[0].name.split('.').pop().toLowerCase()
+      if (!['txt', 'csv', 'tsv'].includes(fileExt)) {
+        setError('Only .txt, .csv and .tsv files are accepted.')
+        return
+      }
       // Reject files over 10 MB before sending to the server
       const MAX_BYTES = 10 * 1024 * 1024
       if (accepted[0].size > MAX_BYTES) {
@@ -159,7 +166,8 @@ export default function Step1Upload() {
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    accept: { 'text/plain': ['.txt'], 'text/csv': ['.csv'], 'text/tsv': ['.tsv'] },
+    // Include both text/tsv and text/tab-separated-values — macOS uses text/plain for .tsv
+    accept: { 'text/plain': ['.txt', '.tsv', '.csv'], 'text/csv': ['.csv'], 'text/tsv': ['.tsv'], 'text/tab-separated-values': ['.tsv'] },
     multiple: false,
     disabled: uploading,
   })

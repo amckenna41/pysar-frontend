@@ -338,19 +338,12 @@ export const useAppStore = create(
     }),
     {
     name: 'pysar-app-state',
-    // Only persist user-meaningful state; transient UI and already-persisted slices are excluded
+    // Only persist user-meaningful preferences; session state (dataset, step,
+    // encoding, job) intentionally excluded so a page refresh always starts clean.
     partialize: (state) => ({
-      darkMode:       state.darkMode,
-      showLanding:    state.showLanding,
-      step:           state.step,
-      // Strip _pendingFile (a File object): JSON.stringify serialises it to {} which
-      // is truthy but breaks the lazy-upload in handleRun after a page reload.
-      // _pendingFileText / _pendingFileName are plain strings and survive serialisation.
-      dataset:        state.dataset
-        ? { ...state.dataset, _pendingFile: undefined }
-        : null,
-      config:         state.config,
-      encoding:       state.encoding,
+      darkMode:        state.darkMode,
+      showLanding:     state.showLanding,
+      config:          state.config,
       aaiIndicesCache: state.aaiIndicesCache,
     }),
     // Re-apply dark mode CSS class after state is rehydrated from localStorage
