@@ -1282,7 +1282,7 @@ export default function Step4Results() {
                   <div key={col} className="rounded-lg border border-gray-100 dark:border-gray-700 p-3">
                     <p className="text-xs text-gray-400 font-medium mb-0.5">{col}</p>
                     <p className="text-sm font-bold text-gray-800 dark:text-gray-100 break-all">
-                      {typeof val === 'number' ? val.toFixed(6) : (val ?? '—')}
+                      {typeof val === 'number' ? val.toFixed(METRIC_COLS.includes(col) ? 4 : 6) : (val ?? '—')}
                     </p>
                     {q && (
                       <span className={`text-xs px-1.5 py-0.5 rounded-full font-semibold mt-1 inline-block ${q.cls}`}>

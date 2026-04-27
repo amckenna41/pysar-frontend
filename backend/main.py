@@ -677,8 +677,20 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
     config_path: Optional[Path] = None
     try:
         logger.info(
-            "[job:%s] Started — strategy=%s algorithm=%s n_jobs=%s max_models=%s",
-            short_id, req.strategy, req.algorithm, req.n_jobs, req.max_models,
+            "[job:%s] ── ENCODING PROCESS STARTED ─────────────────────────────────────────\n"
+            "  Job ID     : %s\n"
+            "  Strategy   : %s\n"
+            "  Algorithm  : %s\n"
+            "  Seq col    : %s  →  Act col: %s\n"
+            "  n_jobs     : %s  |  max_models: %s  |  sort_by: %s\n"
+            "  Test split : %.0f%%  |  CV: %s%s",
+            short_id, job_id,
+            req.strategy, req.algorithm,
+            req.sequence_col, req.activity_col,
+            req.n_jobs, req.max_models or "unlimited", req.sort_by,
+            req.test_split * 100,
+            f"{req.cv_folds}-fold" if req.use_cv else "disabled",
+            f"  |  random_state: {req.random_state}" if req.random_state is not None else "",
         )
 
         if _cancelled():
@@ -701,17 +713,22 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
         _log("Initialising Encoding class…")
         t0 = time.monotonic()
         encoding = Encoding(config_file=str(config_path), verbose=False)
+        _load_elapsed = time.monotonic() - t0
         _log(
-            f"Dataset loaded: {encoding.num_seqs} sequences "
+            f"Dataset loaded — {encoding.num_seqs} sequences "
             f"× {encoding.sequence_length} residues "
-            f"(took {time.monotonic() - t0:.1f}s)"
+            f"(took {_load_elapsed:.1f}s)"
+        )
+        logger.info(
+            "[job:%s]   Dataset    : %s sequences, %s residues per sequence (load: %.1fs)",
+            short_id, encoding.num_seqs, encoding.sequence_length, _load_elapsed,
         )
 
         # Phase 3: estimate model count
         total_models = _estimate_total_models(req)
         job["total_models"] = total_models
         job["progress"] = 35
-        logger.info("[job:%s] Estimated models: %s", short_id, total_models)
+        logger.info("[job:%s]   Est. models: %s", short_id, total_models if total_models else "unknown")
 
         # Common kwargs shared by all three encoding methods
         common: Dict[str, Any] = {
@@ -725,6 +742,25 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
 
         model_hint = f" ({total_models:,} models estimated)" if total_models else ""
         _log(f"Strategy: {req.strategy} — starting encoding{model_hint}…")
+
+        # Log a preview of what will be encoded
+        if req.strategy in ("aai", "aai_descriptor") and req.aai_indices:
+            _n = len(req.aai_indices)
+            _preview = ", ".join(req.aai_indices[:8])
+            logger.info(
+                "[job:%s]   AAI indices: %s selected — [%s%s]",
+                short_id, _n, _preview, ", …" if _n > 8 else "",
+            )
+        elif req.strategy == "aai" and not req.aai_indices:
+            logger.info("[job:%s]   AAI indices: all 566 (no filter applied)", short_id)
+        if req.strategy in ("descriptor", "aai_descriptor") and req.selected_descriptors:
+            _n = len(req.selected_descriptors)
+            _preview = ", ".join(req.selected_descriptors[:8])
+            logger.info(
+                "[job:%s]   Descriptors: %s selected — [%s%s]  combo=%s",
+                short_id, _n, _preview, ", …" if _n > 8 else "", req.desc_combo,
+            )
+
         job["progress"] = 45
 
         if _cancelled():
@@ -761,8 +797,12 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
         )
         _CANCEL_PROCESSES[job_id] = _enc_proc
         t_enc = time.monotonic()
-        logger.info("[job:%s] Encoding subprocess starting — strategy=%s", short_id, req.strategy)
+        logger.info(
+            "[job:%s] Encoding subprocess starting — strategy=%s  pid=pending",
+            short_id, req.strategy,
+        )
         _enc_proc.start()
+        logger.info("[job:%s]   Subprocess PID: %s", short_id, _enc_proc.pid)
 
         # Poll for the result while checking the cancel flag every 2 s
         _enc_result = None
@@ -797,7 +837,6 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
         results_df = _payload[0]
 
         enc_elapsed = time.monotonic() - t_enc
-        logger.info("[job:%s] Encoding subprocess finished in %.1fs", short_id, enc_elapsed)
 
         if _cancelled():
             _log("Cancelled after encoding — results discarded.")
@@ -807,7 +846,13 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
         n_models = len(results_df)
         total_elapsed = time.monotonic() - job_start
         _log(f"Complete — {n_models} model(s) evaluated in {total_elapsed:.1f}s total.")
-        logger.info("[job:%s] Job complete — %s model(s) | total=%.1fs enc=%.1fs", short_id, n_models, total_elapsed, enc_elapsed)
+        logger.info(
+            "[job:%s] ── ENCODING PROCESS COMPLETE ───────────────────────────────────────\n"
+            "  Models evaluated : %s\n"
+            "  Encoding time    : %.1fs\n"
+            "  Total job time   : %.1fs",
+            short_id, n_models, enc_elapsed, total_elapsed,
+        )
         job["status"] = "completed"
         job["completed_at"] = datetime.now(timezone.utc).isoformat()
         job["progress"] = 100
@@ -822,6 +867,16 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
             id_col = next((c for c in results_df.columns if c not in _metric_cols), None)
             if id_col and len(results_df) > 0:
                 best_id = str(results_df.iloc[0][id_col])
+                _best_row = results_df.iloc[0].to_dict()
+                _metrics_str = "  ".join(
+                    f"{k}={round(float(v), 4)}" for k, v in _best_row.items()
+                    if k != id_col and isinstance(v, (int, float))
+                )
+                logger.info(
+                    "[job:%s]   Best model : %s\n"
+                    "  Metrics    : %s",
+                    short_id, best_id, _metrics_str or "(no metrics)",
+                )
                 _log(f"Fitting best model ({best_id}) for predicted-vs-actual plot…")
                 # Re-run encoding with only the best model — fast single fit
                 if req.strategy == "aai":
@@ -853,7 +908,15 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
         job["completed_at"] = datetime.now(timezone.utc).isoformat()
         job["error"] = str(exc)
         _log(f"ERROR: {exc}")
-        logger.exception("[job:%s] Job failed after %.1fs — %s", short_id, elapsed, exc)
+        logger.error(
+            "[job:%s] ── ENCODING PROCESS FAILED ────────────────────────────────────────\n"
+            "  Strategy   : %s\n"
+            "  Algorithm  : %s\n"
+            "  Elapsed    : %.1fs\n"
+            "  Error      : %s",
+            short_id, req.strategy, req.algorithm, elapsed, exc,
+        )
+        logger.exception("[job:%s] Stack trace:", short_id)
     finally:
         if config_path and config_path.exists():
             try:

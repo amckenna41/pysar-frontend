@@ -105,7 +105,6 @@ export default function Step3Encode() {
   }, [setBackendOnline])
   const [showDryRun, setShowDryRun]               = useState(false)
   const [showConfigSnapshot, setShowConfigSnapshot] = useState(false)
-  const [useResume, setUseResume]                 = useState(false)
   // Dismissed warning keys (e.g. 'bigJob', 'descLag')
   const [dismissedWarnings, setDismissedWarnings]   = useState(new Set())
 
@@ -379,7 +378,6 @@ export default function Step3Encode() {
       random_state:         encoding.random_state ? parseInt(encoding.random_state, 10) : null,
       use_cv:               config.model.use_cv ?? false,
       cv_folds:             config.model.cv_folds ?? 5,
-      resume:               useResume,
     }
   }
 
@@ -984,18 +982,7 @@ export default function Step3Encode() {
             </label>
           </div>
 
-          {/* resume — sends resume:true to the backend */}
-          <div className="flex items-end pb-1.5">
-            <label className="flex items-center gap-2 cursor-pointer" title="Resume from a previous checkpoint if one exists">
-              <input
-                type="checkbox"
-                checked={useResume}
-                onChange={(e) => setUseResume(e.target.checked)}
-                className="w-4 h-4 accent-indigo-600"
-              />
-              <span className="text-sm text-gray-700 dark:text-gray-300">Resume previous</span>
-            </label>
-          </div>
+
         </div>
       </div>
 
