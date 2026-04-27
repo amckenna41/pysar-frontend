@@ -141,7 +141,7 @@ export default function AaiExplorer() {
         <div className="relative flex-1">
           <MagnifyingGlassIcon className="absolute left-3 top-2.5 w-4 h-4 text-gray-400 pointer-events-none" />
           <input
-            className="input pl-9 pr-8"
+            className="input pl-10 pr-8"
             placeholder="Search by code, description, or category…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -387,23 +387,7 @@ export default function AaiExplorer() {
           </a>
         </div>
 
-        {/* Original database citation */}
-        <div className="border-t border-indigo-100 pt-4">
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Original Database Reference</p>
-          <p className="text-xs text-gray-500 leading-relaxed">
-            Shuichi Kawashima, Minoru Kanehisa,{' '}
-            <span className="italic">AAindex: Amino Acid index database</span>,{' '}
-            Nucleic Acids Research, Volume 28, Issue 1, 1 January 2000, Page 374.{' '}
-            <a
-              href="https://doi.org/10.1093/nar/28.1.374"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-indigo-600 hover:underline break-all"
-            >
-              https://doi.org/10.1093/nar/28.1.374
-            </a>
-          </p>
-        </div>
+
       </div>
     </div>
   )

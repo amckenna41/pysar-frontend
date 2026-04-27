@@ -58,6 +58,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 - **PDF export Descriptor column width** — the results table in the exported PDF now detects the identifier (non-metric) column and allocates it 42% of the content width (capped at 72 mm), preventing long descriptor names from being truncated. Metric columns share the remaining width equally. Truncation is now driven by `jsPDF.splitTextToSize` against the actual column width rather than a fixed 18-character hard cut.
+- **Rich encoding job console logging** — `_run_job` in `backend/main.py` now emits a structured start banner (job ID, strategy, algorithm, sequence/activity columns, n_jobs, max_models, sort_by, test split, CV config), dataset dimensions and load time, a preview of selected AAI indices or descriptors, the encoding subprocess PID, and a completion banner with models evaluated, encoding time, total job time, best model name, and all metric values. Failures emit a dedicated error banner with strategy, algorithm, elapsed time, and a full stack trace.
+- **Explained Variance in model detail modal rounded to 4 decimal places** — the per-model detail panel previously rendered all numeric values to 6 decimal places. Metric columns (`R2`, `RMSE`, `MSE`, `MAE`, `RPD`, `Explained_Var`) now render to 4 dp, matching the main results table.
+
+### Security
+- **Removed dead `resume` / `resume_file` fields from `EncodeRequest`** — both fields were declared in the Pydantic model but never read by `_run_job` or `_build_config`. `resume_file` was a raw string path with no path-traversal guard. Removed from the backend model; the corresponding `useResume` state, payload key, and "Resume previous" UI checkbox have also been removed from `Step3Encode.jsx`.
+- **UUID validation on job-ID path parameters** — `get_job`, `cancel_job`, and `delete_job` now call `_validate_file_id(job_id)` before any dict access, consistent with how all dataset endpoints already validate `file_id`. Rejects malformed or metacharacter-containing IDs at the boundary.
+- **`.gitignore` broadened to cover all `.env.*` variants** — the pattern `.env` (exact match) was widened to `.env.*` so `frontend/.env.production` and any future environment-specific files are excluded from version control.
 - **AAI index chip spacing** — the selected-index chip container in Step 3 uses `gap-1.5` (6 px) instead of `gap-1` (4 px), preventing chips from visually overlapping when multiple indices are selected.
 - **`CTD` acronym display** — `snakeToTitle` now maps `Ctd` → `CTD` after title-casing, so `ctd_composition` renders as `CTD Composition` rather than `Ctd Composition`.
 

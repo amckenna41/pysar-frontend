@@ -297,7 +297,7 @@ export default function DescriptorExplorer() {
         <div className="relative flex-1">
           <MagnifyingGlassIcon className="absolute left-3 top-2.5 w-4 h-4 text-gray-400 pointer-events-none" />
           <input
-            className="input pl-9 pr-8"
+            className="input pl-10 pr-8"
             placeholder="Search by name, category or description…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}

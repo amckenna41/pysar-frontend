@@ -465,7 +465,7 @@ export default function JobsPanel() {
               {/* R² badge */}
               {entry.status === 'completed' && entry.best_r2 != null && (
                 <span className="text-xs font-mono bg-green-50 text-green-700 border border-green-200 px-1.5 py-0.5 rounded shrink-0">
-                  R²={Number(entry.best_r2).toFixed(3)}
+                  R²={Number(entry.best_r2).toFixed(4)}
                 </span>
               )}
 
