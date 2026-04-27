@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Toasts moved to `bottom-center`** — `react-hot-toast` notifications now appear at the bottom-centre of the viewport instead of the top-right, reducing interference with the sidebar and header.
 
 ### Fixed
+- **"Dataset upload failed" error when running with frontend only** — `handleRun` in `Step3Encode.jsx` previously only blocked when `backendAvailable === false`, so clicking Run before the 4-second health-check resolved (while `backendOnline` was still `null`) bypassed the guard and attempted a lazy upload against an offline backend. The guard is now `!== true`, which catches both `null` (in-flight) and `false` (confirmed offline), with distinct toast messages for each state.
 - **`@vitest/coverage-v8` version bump** — updated `vitest` and `@vitest/coverage-v8` in `frontend/package.json` from `^2.2.5` to `^3.0.0`. Version `2.2.5` was never published (the `2.x` line only reached `2.1.9`), causing Vercel builds to fail with `npm error notarget No matching version found`.
 
 ### Changed

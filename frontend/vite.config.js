@@ -22,6 +22,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
+          'react-vendor': ['react', 'react-dom'],
           'charts': ['recharts'],
           'xlsx': ['xlsx'],
           'utils': ['axios', 'zustand', 'react-hot-toast', 'react-dropzone', 'canvas-confetti'],
