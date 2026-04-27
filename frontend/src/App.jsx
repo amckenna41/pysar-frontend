@@ -29,6 +29,11 @@ export default function App() {
     checkBackend().then(setBackendOnline)
   }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Scroll to top whenever the encoding step changes.
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [step])
+
   // Show landing page before entering the app
   if (showLanding) return <LandingPage />
 
