@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ExclamationTriangleIcon, ChevronDownIcon, ChevronUpIcon } from '@heroicons/react/24/outline'
 import { useAppStore } from '../store/appStore'
+import HelpTooltip from './HelpTooltip'
 
 const ALGORITHMS = [
   { value: 'plsregression',    label: 'PLS Regression' },
@@ -86,6 +87,20 @@ const ALGO_SCALE_WARNINGS = {
   knn:  { threshold: 10000, msg: (n) => `KNN requires pairwise distances — may be slow above ~10,000 samples. Your dataset has ${n} rows.` },
 }
 
+const PARAM_TOOLTIPS = {
+  n_components: 'Number of latent components in PLS; increase when your relationship is complex, but keep it low for small datasets to avoid overfitting.',
+  n_estimators: 'Number of trees or boosting rounds; larger values can improve stability but increase training time.',
+  max_depth: 'Maximum tree depth; lower values regularize and reduce overfitting, higher values model more complex patterns.',
+  learning_rate: 'How strongly each boosting step updates the model; use smaller values for smoother learning and better generalization.',
+  C: 'SVR regularization strength; higher values fit training data more closely, lower values are more conservative.',
+  kernel: 'SVR kernel function; rbf is a strong default, while linear is often faster on large feature sets.',
+  epsilon: 'SVR error tolerance tube; larger values ignore small errors and can improve robustness on noisy targets.',
+  n_neighbors: 'How many neighbors vote in KNN; smaller values capture local patterns, larger values smooth predictions.',
+  alpha: 'Regularization strength for linear penalized models; increase to reduce variance, decrease to fit training data more closely.',
+  l1_ratio: 'ElasticNet mix between L1 and L2 penalties; raise it for more sparsity, lower it for smoother coefficient shrinkage.',
+  max_iter: 'Maximum boosting iterations for HistGradientBoosting; raise only when training has not converged.',
+}
+
 export default function ModelConfig() {
   const { config, setConfigValue, dataset } = useAppStore()
   const {
@@ -155,9 +170,12 @@ export default function ModelConfig() {
 
       {/* Algorithm multi-select toggle grid */}
       <div>
-        <label className="label">
-          ML algorithm
-          <span className="ml-1 font-normal text-gray-400">(select one or more)</span>
+        <label className="label flex items-center gap-1">
+          <span>
+            ML algorithm
+            <span className="ml-1 font-normal text-gray-400">(select one or more)</span>
+          </span>
+          <HelpTooltip tip="Pick one or more regressors to compare; start with PLS and Random Forest for robust baselines, then add others if performance plateaus." />
         </label>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-1">
           {ALGORITHMS.map(({ value, label }) => {
@@ -197,7 +215,10 @@ export default function ModelConfig() {
       {/* Per-algorithm parameters — accordion sections when multiple algos selected */}
       {anyHasParams && (
         <div>
-          <label className="label">Algorithm parameters</label>
+          <label className="label flex items-center gap-1">
+            Algorithm parameters
+            <HelpTooltip tip="Tune only the selected model parameters here; when unsure, apply a Quick preset first and adjust one value at a time." />
+          </label>
           <div className="space-y-2 mt-1">
             {algorithms.map((algo) => {
               const paramDefs = ALGO_PARAMS[algo] ?? []
@@ -211,7 +232,7 @@ export default function ModelConfig() {
               const multiAlgo = algorithms.length > 1
 
               return (
-                <div key={algo} className="rounded-lg border border-gray-200 overflow-hidden">
+                <div key={algo} className="rounded-lg border border-gray-200 overflow-visible">
                   {/* Collapsible header — only shown when multiple algos are selected */}
                   {multiAlgo && (
                     <button
@@ -240,8 +261,18 @@ export default function ModelConfig() {
                       {/* Quick presets */}
                       {hasPresets && (
                         <div>
-                          {multiAlgo && <label className="label">Quick presets</label>}
-                          {!multiAlgo && <label className="label">Quick presets</label>}
+                          {multiAlgo && (
+                            <label className="label flex items-center gap-1">
+                              Quick presets
+                              <HelpTooltip tip="Fast, Balanced, and Thorough are opinionated starting points; use them to reduce trial-and-error before manual tuning." />
+                            </label>
+                          )}
+                          {!multiAlgo && (
+                            <label className="label flex items-center gap-1">
+                              Quick presets
+                              <HelpTooltip tip="Fast, Balanced, and Thorough are opinionated starting points; use them to reduce trial-and-error before manual tuning." />
+                            </label>
+                          )}
                           <div className="flex gap-2 mt-1">
                             {[['fast', 'Fast ⚡'], ['balanced', 'Balanced'], ['thorough', 'Thorough 🔬']].map(
                               ([key, label]) =>
@@ -264,7 +295,10 @@ export default function ModelConfig() {
                         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                           {paramDefs.map(({ key, label, type, default: defaultVal }) => (
                             <div key={key}>
-                              <label className="label">{label}</label>
+                              <label className="label flex items-center gap-1">
+                                {label}
+                                <HelpTooltip tip={PARAM_TOOLTIPS[key] ?? 'Model hyperparameter for this algorithm; change only if you need to trade off bias, variance, or runtime.'} />
+                              </label>
                               <input
                                 type={type}
                                 className="input"
@@ -290,7 +324,10 @@ export default function ModelConfig() {
       {/* Evaluation strategy: train/test split vs k-fold CV */}
       <div>
         <div className="flex items-center gap-3 mb-3">
-          <label className="label m-0">Evaluation strategy</label>
+          <label className="label m-0 flex items-center gap-1">
+            Evaluation strategy
+            <HelpTooltip tip="Choose Train/Test for faster iteration and Cross-Validation for more reliable estimates on smaller datasets." />
+          </label>
           <div className="flex rounded-lg border border-gray-200 overflow-hidden">
             <button
               onClick={() => setConfigValue(['model', 'use_cv'], false)}
@@ -309,8 +346,9 @@ export default function ModelConfig() {
 
         {!use_cv ? (
           <>
-            <label className="label">
-              Test split — {Math.round((test_split ?? 0.2) * 100)}% held out for evaluation
+            <label className="label flex items-center gap-1">
+              <span>Test split — {Math.round((test_split ?? 0.2) * 100)}% held out for evaluation</span>
+              <HelpTooltip tip="Controls how much data is reserved for evaluation; use larger holdouts for very large datasets and smaller holdouts when data is limited." />
             </label>
             <input
               type="range" min="0.1" max="0.5" step="0.05"
@@ -325,7 +363,10 @@ export default function ModelConfig() {
         ) : (
           <div className="flex items-center gap-4">
             <div>
-              <label className="label">Folds</label>
+              <label className="label flex items-center gap-1">
+                Folds
+                <HelpTooltip tip="Number of cross-validation splits; 5 is a solid default, and 10 can be more stable for noisy small datasets at higher compute cost." />
+              </label>
               <input
                 type="number" className="input w-24"
                 min={2} max={20}
@@ -342,9 +383,12 @@ export default function ModelConfig() {
 
       {/* Random seed */}
       <div>
-        <label className="label">
-          Random seed
-          <span className="ml-1 font-normal text-gray-400">(leave blank for non-deterministic)</span>
+        <label className="label flex items-center gap-1">
+          <span>
+            Random seed
+            <span className="ml-1 font-normal text-gray-400">(leave blank for non-deterministic)</span>
+          </span>
+          <HelpTooltip tip="Set a seed to reproduce the same train/test split and stochastic model behavior; leave blank when you want different randomized runs." />
         </label>
         <input
           type="number" className="input w-32"

@@ -7,6 +7,7 @@ import {
 import toast from 'react-hot-toast'
 import { useAppStore } from '../store/appStore'
 import { uploadDescriptorsCSV } from '../utils/api'
+import HelpTooltip from './HelpTooltip'
 
 // Common AAI property codes used in autocorrelation descriptors
 const COMMON_AAI_PROPS = [
@@ -65,6 +66,22 @@ const GROUP_COLORS = {
   'CTD':                 'badge-green',
   'Quasi-Sequence-Order':'badge-gray',
   'Pseudo-AA':           'badge-gray',
+}
+
+const DESCRIPTOR_PARAM_TOOLTIPS = {
+  lag: 'Maximum sequence separation used in autocorrelation descriptors; increase for longer-range effects, decrease for shorter sequences or faster runs.',
+  lambda: 'Controls sequence-order depth in pseudo-amino-acid descriptors; larger values encode longer-range dependencies but expand feature complexity.',
+  weight: 'Balances sequence-order contribution versus composition terms; raise it when positional order matters more in your task.',
+  normalize: 'Normalizes autocorrelation outputs for scale consistency; keep enabled when combining features with different magnitudes.',
+  properties: 'Select AAIndex property codes used to compute autocorrelation; start with a small diverse set, then expand if performance improves.',
+  ctd_property: 'Primary physicochemical axis for CTD features; choose one when you want focused interpretation, or enable all for broader coverage.',
+  ctd_all: 'When enabled, computes CTD descriptors for all seven property families, increasing feature count and runtime.',
+  distance_matrix: 'Amino-acid distance definition used by sequence-order descriptors; switch matrices if your domain favors physicochemical versus substitution-aware distances.',
+  ph: 'pH used to estimate residue charge state; change this when your assay conditions differ materially from neutral pH.',
+  k: 'Length of peptide fragments in k-mer composition; larger k captures richer motifs but grows feature dimensionality quickly.',
+  alphabet_size: 'Number of groups in reduced amino-acid alphabet; smaller values reduce dimensionality while larger values preserve detail.',
+  window: 'Sliding-window size for local hydrophobic moment estimation; increase for smoother regional trends, decrease for finer local changes.',
+  angle: 'Rotation angle per residue for hydrophobic moment calculation; 100 is typical for alpha-helices, so change only for other structural assumptions.',
 }
 
 export default function DescriptorConfig() {
@@ -315,7 +332,7 @@ export default function DescriptorConfig() {
           const hasParams = params.length > 0
 
           return (
-            <div key={key} className="border border-gray-200 rounded-lg overflow-hidden">
+            <div key={key} className="border border-gray-200 rounded-lg overflow-visible">
               <button
                 onClick={() => hasParams && toggle(key)}
                 className={[
@@ -371,12 +388,16 @@ export default function DescriptorConfig() {
 
 function DescriptorParams({ descKey, params, desc, setDesc, toggleProp }) {
   const values = desc[descKey] ?? {}
+  const help = (key) => DESCRIPTOR_PARAM_TOOLTIPS[key] ?? 'Descriptor metaparameter used during feature generation.'
 
   return (
     <div className="space-y-3">
       {params.includes('lag') && (
         <div>
-          <label className="label">Lag (max lag for autocorrelation)</label>
+          <label className="label flex items-center gap-1">
+            Lag (max lag for autocorrelation)
+            <HelpTooltip tip={help('lag')} />
+          </label>
           <input
             type="number" className="input w-32"
             value={values.lag ?? 30} min={1} max={50}
@@ -387,7 +408,10 @@ function DescriptorParams({ descKey, params, desc, setDesc, toggleProp }) {
 
       {params.includes('lambda') && (
         <div>
-          <label className="label">Lambda</label>
+          <label className="label flex items-center gap-1">
+            Lambda
+            <HelpTooltip tip={help('lambda')} />
+          </label>
           <input
             type="number" className="input w-32"
             value={values.lambda ?? 30} min={1}
@@ -398,7 +422,10 @@ function DescriptorParams({ descKey, params, desc, setDesc, toggleProp }) {
 
       {params.includes('weight') && (
         <div>
-          <label className="label">Weight (correlation weighting factor)</label>
+          <label className="label flex items-center gap-1">
+            Weight (correlation weighting factor)
+            <HelpTooltip tip={help('weight')} />
+          </label>
           <input
             type="number" className="input w-32"
             value={values.weight ?? 0.1} min={0} max={1} step={0.01}
@@ -418,12 +445,16 @@ function DescriptorParams({ descKey, params, desc, setDesc, toggleProp }) {
           <label htmlFor={`norm-${descKey}`} className="text-sm text-gray-700 cursor-pointer">
             Normalize autocorrelation values
           </label>
+          <HelpTooltip tip={help('normalize')} />
         </div>
       )}
 
       {params.includes('properties') && (
         <div>
-          <label className="label">AAI physicochemical properties</label>
+          <label className="label flex items-center gap-1">
+            AAI physicochemical properties
+            <HelpTooltip tip={help('properties')} />
+          </label>
           <div className="grid grid-cols-2 gap-1.5 mt-1">
             {COMMON_AAI_PROPS.map((prop) => {
               const checked = (values.properties ?? []).includes(prop)
@@ -444,7 +475,10 @@ function DescriptorParams({ descKey, params, desc, setDesc, toggleProp }) {
 
       {params.includes('ctd_property') && (
         <div>
-          <label className="label">CTD physicochemical property</label>
+          <label className="label flex items-center gap-1">
+            CTD physicochemical property
+            <HelpTooltip tip={help('ctd_property')} />
+          </label>
           <select
             className="input"
             value={values.property ?? 'hydrophobicity'}
@@ -466,12 +500,16 @@ function DescriptorParams({ descKey, params, desc, setDesc, toggleProp }) {
           <label htmlFor={`ctd-all-${descKey}`} className="text-sm text-gray-700 cursor-pointer">
             Use all 7 physicochemical properties (147 features total)
           </label>
+          <HelpTooltip tip={help('ctd_all')} />
         </div>
       )}
 
       {params.includes('distance_matrix') && (
         <div>
-          <label className="label">Distance matrix</label>
+          <label className="label flex items-center gap-1">
+            Distance matrix
+            <HelpTooltip tip={help('distance_matrix')} />
+          </label>
           <select
             className="input"
             value={values.distance_matrix ?? 'schneider-wrede'}
@@ -486,7 +524,10 @@ function DescriptorParams({ descKey, params, desc, setDesc, toggleProp }) {
 
       {params.includes('ph') && (
         <div>
-          <label className="label">pH (for charge calculation, default 7.4)</label>
+          <label className="label flex items-center gap-1">
+            pH (for charge calculation, default 7.4)
+            <HelpTooltip tip={help('ph')} />
+          </label>
           <input
             type="number" className="input w-32"
             value={values.ph ?? 7.4} min={0} max={14} step={0.1}
@@ -497,7 +538,10 @@ function DescriptorParams({ descKey, params, desc, setDesc, toggleProp }) {
 
       {params.includes('k') && (
         <div>
-          <label className="label">k (k-mer length, e.g. 2 = dipeptides → 400 features)</label>
+          <label className="label flex items-center gap-1">
+            k (k-mer length, e.g. 2 = dipeptides -&gt; 400 features)
+            <HelpTooltip tip={help('k')} />
+          </label>
           <input
             type="number" className="input w-32"
             value={values.k ?? 2} min={1} max={5} step={1}
@@ -508,7 +552,10 @@ function DescriptorParams({ descKey, params, desc, setDesc, toggleProp }) {
 
       {params.includes('alphabet_size') && (
         <div>
-          <label className="label">Alphabet size (reduced residue groups)</label>
+          <label className="label flex items-center gap-1">
+            Alphabet size (reduced residue groups)
+            <HelpTooltip tip={help('alphabet_size')} />
+          </label>
           <select
             className="input w-32"
             value={values.alphabet_size ?? 6}
@@ -521,7 +568,10 @@ function DescriptorParams({ descKey, params, desc, setDesc, toggleProp }) {
 
       {params.includes('window') && (
         <div>
-          <label className="label">Window size (sliding window, default 11)</label>
+          <label className="label flex items-center gap-1">
+            Window size (sliding window, default 11)
+            <HelpTooltip tip={help('window')} />
+          </label>
           <input
             type="number" className="input w-32"
             value={values.window ?? 11} min={3} max={50} step={1}
@@ -532,7 +582,10 @@ function DescriptorParams({ descKey, params, desc, setDesc, toggleProp }) {
 
       {params.includes('angle') && (
         <div>
-          <label className="label">Angle in degrees (helical rotation, default 100 for α-helix)</label>
+          <label className="label flex items-center gap-1">
+            Angle in degrees (helical rotation, default 100 for alpha-helix)
+            <HelpTooltip tip={help('angle')} />
+          </label>
           <input
             type="number" className="input w-32"
             value={values.angle ?? 100} min={1} max={360} step={1}

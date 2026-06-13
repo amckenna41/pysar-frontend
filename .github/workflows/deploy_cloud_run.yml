@@ -1,0 +1,205 @@
+# Manual-only deployment: Cloud Run backend + Vercel frontend env update
+#
+# Trigger: GitHub UI → Actions tab → "Deploy — Cloud Run" → Run workflow
+# Never runs automatically on push, pull_request, or schedule.
+#
+# Required GitHub secrets (repo Settings → Secrets and variables → Actions):
+#   GCP_SA_KEY          — service account JSON key with roles:
+#                           Artifact Registry Writer (artifactregistry.writer)
+#                           Cloud Run Admin         (run.admin)
+#                           Service Account User    (iam.serviceAccountUser)
+#   VERCEL_TOKEN        — Vercel personal access token (vercel.com/account/tokens)
+#   VERCEL_PROJECT_ID   — Vercel project ID (project Settings → General → Project ID)
+#
+# Optional GitHub secrets:
+#   CORS_ORIGIN         — frontend URL for CORS (default: https://pysar-app.vercel.app)
+#   VERCEL_DEPLOY_HOOK  — Vercel deploy hook URL to trigger a frontend redeploy
+#                         (project Settings → Git → Deploy Hooks → create one for main)
+
+name: Deploy — Cloud Run
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'GCP region'
+        required: false
+        default: 'europe-west1'
+        type: string
+      service:
+        description: 'Cloud Run service name'
+        required: false
+        default: 'pysar'
+        type: string
+      image_tag:
+        description: 'Docker image tag (leave blank to use git SHA)'
+        required: false
+        default: ''
+        type: string
+      trigger_vercel_redeploy:
+        description: 'Trigger Vercel frontend redeploy after updating VITE_API_URL'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # reserved for future Workload Identity Federation migration
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      # Resolve all derived values once so subsequent steps stay readable.
+      - name: Resolve build variables
+        id: vars
+        run: |
+          TAG="${{ inputs.image_tag }}"
+          [ -z "$TAG" ] && TAG="${{ github.sha }}"
+
+          REGION="${{ inputs.region }}"
+          SERVICE="${{ inputs.service }}"
+          PROJECT="pysar-493713"
+          AR_REPO="pysar"
+
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/${SERVICE}:${TAG}"
+          LATEST="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/${SERVICE}:latest"
+
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "region=$REGION"   >> "$GITHUB_OUTPUT"
+          echo "service=$SERVICE" >> "$GITHUB_OUTPUT"
+          echo "project=$PROJECT" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE"     >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST"   >> "$GITHUB_OUTPUT"
+
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ steps.vars.outputs.region }}-docker.pkg.dev --quiet
+
+      - name: Ensure Artifact Registry repo exists
+        run: |
+          gcloud artifacts repositories describe pysar \
+            --location=${{ steps.vars.outputs.region }} \
+            --project=${{ steps.vars.outputs.project }} 2>/dev/null || \
+          gcloud artifacts repositories create pysar \
+            --location=${{ steps.vars.outputs.region }} \
+            --repository-format=docker \
+            --description="pySAR Docker images" \
+            --project=${{ steps.vars.outputs.project }}
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t "${{ steps.vars.outputs.image }}" \
+            -t "${{ steps.vars.outputs.latest }}" \
+            .
+
+      - name: Push to Artifact Registry
+        run: |
+          docker push "${{ steps.vars.outputs.image }}"
+          docker push "${{ steps.vars.outputs.latest }}"
+
+      - name: Deploy to Cloud Run
+        run: |
+          CORS="${{ secrets.CORS_ORIGIN }}"
+          CORS="${CORS:-https://pysar-app.vercel.app}"
+
+          gcloud run deploy "${{ steps.vars.outputs.service }}" \
+            --image="${{ steps.vars.outputs.image }}" \
+            --region="${{ steps.vars.outputs.region }}" \
+            --project="${{ steps.vars.outputs.project }}" \
+            --platform=managed \
+            --allow-unauthenticated \
+            --memory=2Gi \
+            --cpu=2 \
+            --min-instances=1 \
+            --max-instances=1 \
+            --timeout=3600 \
+            --startup-cpu-boost \
+            --no-cpu-throttling \
+            --set-env-vars="CORS_ORIGIN=${CORS},TRUST_PROXY=true"
+
+      - name: Get Cloud Run service URL
+        id: service_url
+        run: |
+          URL=$(gcloud run services describe "${{ steps.vars.outputs.service }}" \
+            --region="${{ steps.vars.outputs.region }}" \
+            --project="${{ steps.vars.outputs.project }}" \
+            --format='value(status.url)')
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Cloud Run URL: $URL"
+
+      # PATCH existing VITE_API_URL env var, or POST to create it if absent.
+      - name: Update VITE_API_URL in Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          SERVICE_URL: ${{ steps.service_url.outputs.url }}
+        run: |
+          ENV_ID=$(curl -sf \
+            "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}/env?target=production" \
+            -H "Authorization: Bearer ${VERCEL_TOKEN}" | \
+            python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          match = next((e['id'] for e in data.get('envs', []) if e['key'] == 'VITE_API_URL'), '')
+          print(match)
+          ")
+
+          if [ -n "$ENV_ID" ]; then
+            curl -sf -X PATCH \
+              "https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}/env/${ENV_ID}" \
+              -H "Authorization: Bearer ${VERCEL_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"value\": \"${SERVICE_URL}\"}"
+            echo "PATCH VITE_API_URL → ${SERVICE_URL}"
+          else
+            curl -sf -X POST \
+              "https://api.vercel.com/v10/projects/${VERCEL_PROJECT_ID}/env" \
+              -H "Authorization: Bearer ${VERCEL_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"key\": \"VITE_API_URL\", \"value\": \"${SERVICE_URL}\", \"type\": \"plain\", \"target\": [\"production\"]}"
+            echo "POST VITE_API_URL → ${SERVICE_URL}"
+          fi
+
+      - name: Trigger Vercel production redeploy
+        if: inputs.trigger_vercel_redeploy
+        env:
+          VERCEL_DEPLOY_HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
+        run: |
+          if [ -n "${VERCEL_DEPLOY_HOOK}" ]; then
+            curl -sf -X POST "${VERCEL_DEPLOY_HOOK}"
+            echo "Vercel redeploy triggered via deploy hook."
+          else
+            echo "::warning::VERCEL_DEPLOY_HOOK secret not set — VITE_API_URL is updated in Vercel but a redeploy was not triggered. Trigger one manually or add the secret (project Settings → Git → Deploy Hooks)."
+          fi
+
+      - name: Job summary
+        if: always()
+        env:
+          SERVICE_URL: ${{ steps.service_url.outputs.url }}
+        run: |
+          {
+            echo "## Cloud Run Deployment"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| **Service** | \`${{ steps.vars.outputs.service }}\` |"
+            echo "| **URL** | ${SERVICE_URL:-_deploy step failed_} |"
+            echo "| **Region** | \`${{ steps.vars.outputs.region }}\` |"
+            echo "| **Project** | \`${{ steps.vars.outputs.project }}\` |"
+            echo "| **Image tag** | \`${{ steps.vars.outputs.tag }}\` |"
+            echo "| **VITE_API_URL** | ${SERVICE_URL:+Updated in Vercel ✓} |"
+          } >> "$GITHUB_STEP_SUMMARY"

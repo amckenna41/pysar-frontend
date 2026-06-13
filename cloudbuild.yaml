@@ -4,7 +4,7 @@
 
 substitutions:
   _REGION: europe-west1           # region where the Cloud Run service is deployed
-  _SERVICE: pysar-backend
+  _SERVICE: pysar
   _REPO: pysar                    # Artifact Registry repository name
   _CORS_ORIGIN: https://pysar-app.vercel.app
   _VERCEL_PROJECT_ID: ''          # Vercel project ID (Settings → General → Project ID)

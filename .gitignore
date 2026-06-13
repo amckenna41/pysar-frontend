@@ -143,3 +143,9 @@ dmypy.json
 node_modules
 
 node_modules/
+
+ToDo.md
+.vercel
+
+
+.claude/

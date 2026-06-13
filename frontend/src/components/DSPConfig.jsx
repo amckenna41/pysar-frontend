@@ -1,17 +1,5 @@
-import { InformationCircleIcon } from '@heroicons/react/24/outline'
 import { useAppStore } from '../store/appStore'
-
-// Hover tooltip for technical DSP parameters
-function Hint({ tip }) {
-  return (
-    <span className="relative group inline-flex items-center ml-1 cursor-help">
-      <InformationCircleIcon className="w-3.5 h-3.5 text-gray-400 group-hover:text-indigo-500" />
-      <span className="hidden group-hover:block absolute z-20 bottom-full left-1/2 -translate-x-1/2 mb-2 w-60 text-xs text-gray-700 bg-white border border-gray-200 rounded-lg shadow-lg px-3 py-2 pointer-events-none leading-relaxed whitespace-normal">
-        {tip}
-      </span>
-    </span>
-  )
-}
+import HelpTooltip from './HelpTooltip'
 
 // One-click preset DSP configurations
 const DSP_PRESETS = [
@@ -119,6 +107,7 @@ export default function DSPConfig() {
         </button>
         <span className="text-sm text-gray-700">
           Apply DSP to AAI-encoded sequences
+          <HelpTooltip className="ml-1" tip="Turn this on when you want frequency-domain features from AAIndex signals; leave it off for simpler baseline runs and faster jobs." />
         </span>
       </div>
 
@@ -127,7 +116,10 @@ export default function DSPConfig() {
 
           {/* One-click preset profiles */}
           <div>
-            <label className="label">Quick presets</label>
+            <label className="label flex items-center gap-1">
+              Quick presets
+              <HelpTooltip tip="Preset bundles apply a sensible starting combination of spectrum, window, and filter; use them first, then fine-tune only if needed." />
+            </label>
             <div className="flex flex-wrap gap-2 mt-1">
               {DSP_PRESETS.map(({ label, desc }) => (
                 <button
@@ -143,7 +135,10 @@ export default function DSPConfig() {
           </div>
           {/* Spectrum type */}
           <div>
-            <label className="label">Output spectrum</label>
+            <label className="label flex items-center gap-1">
+              Output spectrum
+              <HelpTooltip tip="Choose which FFT component to keep; use power for stable magnitude-based features, and use real or imaginary only for specific signal-analysis experiments." />
+            </label>
             <div className="flex flex-wrap gap-2 mt-1">
               {SPECTRA.map((s) => (
                 <button
@@ -165,7 +160,10 @@ export default function DSPConfig() {
           {/* Window function */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="label">Window function</label>
+              <label className="label flex items-center gap-1">
+                Window function
+                <HelpTooltip tip="Windowing reduces edge artifacts before FFT; start with hamming or hann, and change only if you need sharper peak resolution or stronger leakage suppression." />
+              </label>
               <select
                 className="input"
                 value={window?.type ?? 'hamming'}
@@ -185,7 +183,7 @@ export default function DSPConfig() {
                 />
                 <label htmlFor="sym" className="text-sm text-gray-700 cursor-pointer flex items-center">
                   Symmetric window
-                  <Hint tip="A symmetric window is centred at zero and has equal-length left/right tails. Use asymmetric (unchecked) for filter design; symmetric for spectral analysis." />
+                  <HelpTooltip className="ml-1" tip="Keep this enabled for spectral analysis; disable it mainly when preparing coefficients for certain filter-design workflows." />
                 </label>
               </div>
             </div>
@@ -195,7 +193,7 @@ export default function DSPConfig() {
               <div>
                 <label className="label flex items-center">
                   alpha
-                  <Hint tip="Shape parameter for the Gaussian or Tukey window. Larger values make the window narrower (more concentrated in time, wider in frequency)." />
+                  <HelpTooltip className="ml-1" tip="Controls Gaussian or Tukey window shape; increase it when you want stronger edge tapering, decrease it when you need a broader effective window." />
                 </label>
                 <input type="number" className="input" step="0.1"
                   value={window?.alpha ?? ''}
@@ -207,7 +205,7 @@ export default function DSPConfig() {
               <div>
                 <label className="label flex items-center">
                   beta
-                  <Hint tip="Kaiser window shape parameter. beta = 0 gives a rectangular window; beta = 14 gives a near-optimal window. Higher values add more side-lobe attenuation." />
+                  <HelpTooltip className="ml-1" tip="Kaiser shape control: higher values suppress side lobes more but widen the main lobe; raise it when leakage is a bigger concern than resolution." />
                 </label>
                 <input type="number" className="input"
                   value={window?.beta ?? ''}
@@ -219,7 +217,7 @@ export default function DSPConfig() {
               <div>
                 <label className="label flex items-center">
                   sll
-                  <Hint tip="Chebyshev window: desired side-lobe level in dB (e.g. -60 for 60 dB attenuation). Lower values increase the main-lobe width." />
+                  <HelpTooltip className="ml-1" tip="Target Chebyshev side-lobe attenuation in dB; use larger magnitude attenuation for cleaner spectra at the cost of wider main-lobe response." />
                 </label>
                 <input type="number" className="input"
                   value={window?.sll ?? ''}
@@ -231,7 +229,7 @@ export default function DSPConfig() {
               <div>
                 <label className="label flex items-center">
                   nbar
-                  <Hint tip="Exponential window: number of time constants across the window half-width. Larger values give a flatter window." />
+                  <HelpTooltip className="ml-1" tip="Controls exponential window decay profile; increase it for a flatter window shape, lower it for stronger tapering near edges." />
                 </label>
                 <input type="number" className="input"
                   value={window?.nbar ?? ''}
@@ -243,7 +241,10 @@ export default function DSPConfig() {
 
           {/* Filter function */}
           <div>
-            <label className="label">Filter function</label>
+            <label className="label flex items-center gap-1">
+              Filter function
+              <HelpTooltip tip="Optional post-FFT smoothing or transformation; leave as none unless you are dealing with noisy spectra or replicating a specific DSP protocol." />
+            </label>
             <div className="flex flex-wrap gap-2 mt-1">
               {FILTERS.map((f) => (
                 <button
@@ -270,7 +271,7 @@ export default function DSPConfig() {
                   <div>
                     <label className="label flex items-center">
                       window_length
-                      <Hint tip="Number of data points used in the smoothing window. Must be an odd integer greater than polyorder. Larger values produce smoother output." />
+                      <HelpTooltip className="ml-1" tip="Savitzky-Golay window size in points; larger odd values smooth more aggressively, while smaller values preserve local peaks." />
                     </label>
                     <input type="number" className="input"
                       value={filter.window_length ?? 5} min={1}
@@ -280,7 +281,7 @@ export default function DSPConfig() {
                   <div>
                     <label className="label flex items-center">
                       polyorder
-                      <Hint tip="Polynomial order of the Savitzky-Golay fit. Must be less than window_length. Higher orders preserve sharper peaks but may overfit noise." />
+                      <HelpTooltip className="ml-1" tip="Polynomial degree for Savitzky-Golay smoothing; increase it to preserve sharper curvature, but keep it below window_length to avoid unstable fits." />
                     </label>
                     <input type="number" className="input"
                       value={filter.polyorder ?? 2} min={1}
@@ -296,7 +297,7 @@ export default function DSPConfig() {
                   <div>
                     <label className="label flex items-center">
                       mode
-                      <Hint tip="Edge handling: 'interp' uses polynomial interpolation at boundaries (recommended); others pad the signal differently before filtering." />
+                      <HelpTooltip className="ml-1" tip="Controls boundary handling at sequence edges; use interp in most cases, and try mirror or nearest only if edge behavior looks distorted." />
                     </label>
                     <select className="input"
                       value={filter.mode ?? 'interp'}

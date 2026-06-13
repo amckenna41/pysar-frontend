@@ -26,7 +26,7 @@ import pandas as pd
 from collections import defaultdict
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 
 # ── Path setup: locate the sibling pySAR repo and inject its dependencies ──────
@@ -927,6 +927,18 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
 
 
 # ── API routes ──────────────────────────────────────────────────────────────────
+
+@app.get("/")
+def root():
+    """Redirect browser visits to the frontend (or API docs when no frontend URL is set)."""
+    frontend_url = os.environ.get("CORS_ORIGIN") or os.environ.get("VERCEL_URL")
+    if frontend_url:
+        # CORS_ORIGIN is the full URL (https://…); VERCEL_URL is host-only
+        if not frontend_url.startswith("http"):
+            frontend_url = f"https://{frontend_url}"
+        return RedirectResponse(url=frontend_url, status_code=302)
+    return RedirectResponse(url="/api/docs", status_code=302)
+
 
 @app.get("/api/health")
 def health() -> Dict[str, str]:
