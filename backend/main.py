@@ -1841,7 +1841,6 @@ def cancel_job(job_id: str) -> Dict[str, str]:
     Returns 200 even if the job is unknown (e.g. it ran on a different Cloud Run
     instance) so the frontend always treats the click as successful.
     """
-    _validate_file_id(job_id)
     if job_id not in JOBS:
         # Job may live on a different container instance — treat as already stopped
         logger.info("[job:%s] Cancel requested but job not found on this instance (already done or different instance)", job_id[:8])
@@ -1866,7 +1865,6 @@ def cancel_job(job_id: str) -> Dict[str, str]:
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str) -> Dict[str, Any]:
     """Return the current status and (when done) results for a job."""
-    _validate_file_id(job_id)
     if job_id not in JOBS:
         raise HTTPException(status_code=404, detail="Job not found.")
     return JOBS[job_id]
@@ -1884,7 +1882,6 @@ def list_jobs() -> List[Dict[str, Any]]:
 @app.delete("/api/jobs/{job_id}")
 def delete_job(job_id: str) -> Dict[str, str]:
     """Remove a job from the registry."""
-    _validate_file_id(job_id)
     JOBS.pop(job_id, None)
     return {"deleted": job_id}
 
