@@ -95,8 +95,10 @@ export default function Step1Upload() {
   const [uploadProgress, setUploadProgress] = useState(0)
   const [uploadProcessing, setUploadProcessing] = useState(false) // true after bytes sent, waiting for server
   const [error, setError]               = useState(null)
+  const [backendUnavailable, setBackendUnavailable] = useState(false)
   const [logTransform, setLogTransform] = useState(false)      // activity histogram toggle
   const [showSamples, setShowSamples]   = useState(false)      // sample dataset panel
+  const [showBackendDialog, setShowBackendDialog] = useState(false)
   // Static list — no backend call needed; getExampleDatasets() is now synchronous
   const [sampleList, setSampleList]     = useState(() => getExampleDatasets().datasets)
   const [loadingSample, setLoadingSample] = useState(null)     // name of sample being loaded
@@ -138,6 +140,7 @@ export default function Step1Upload() {
         return
       }
       setError(null)
+      setBackendUnavailable(false)
       setUploading(true)
       setUploadProgress(0)
       setUploadProcessing(false)
@@ -153,9 +156,14 @@ export default function Step1Upload() {
         setLogTransform(false)
         toast.success(`Loaded ${result.num_rows} sequences from ${result.filename}`)
       } catch (err) {
-        const msg = formatApiError(err) || 'Upload failed'
-        setError(msg)
-        toast.error(msg)
+        const isConnErr = !err?.response || err?.code === 'ERR_NETWORK' || err?.code === 'ECONNABORTED' || err?.response?.status === 502 || err?.response?.status === 503
+        if (isConnErr) {
+          setBackendUnavailable(true)
+        } else {
+          const msg = formatApiError(err) || 'Upload failed'
+          setError(msg)
+          toast.error(msg)
+        }
       } finally {
         setUploading(false)
         setUploadProcessing(false)
@@ -466,6 +474,87 @@ export default function Step1Upload() {
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Backend unavailable error */}
+      {backendUnavailable && (
+        <div className="flex items-center gap-2 p-3 rounded-lg bg-red-50 text-red-700 text-sm">
+          <XCircleIcon className="w-4 h-4 shrink-0" />
+          <span>
+            Dataset upload failed — check the backend is running.{' '}
+            <button
+              type="button"
+              onClick={() => setShowBackendDialog(true)}
+              className="underline font-medium hover:text-red-900 transition-colors"
+            >
+              How to install the backend
+            </button>
+          </span>
+          <button
+            type="button"
+            onClick={() => setBackendUnavailable(false)}
+            className="ml-auto p-0.5 rounded hover:bg-red-100 text-red-400 hover:text-red-700 transition-colors"
+            title="Dismiss"
+          >
+            <XMarkIcon className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Backend install dialog */}
+      {showBackendDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowBackendDialog(false) }}
+        >
+          <div className="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <ExclamationTriangleIcon className="w-5 h-5 text-amber-500 shrink-0" />
+                <h2 className="text-base font-semibold text-gray-900">How to install the backend</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBackendDialog(false)}
+                className="p-1 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-700 transition-colors shrink-0"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-sm text-gray-600">
+              The pySAR API server could not be reached. Follow these steps to run it locally.
+            </p>
+            <div className="space-y-3 text-sm text-gray-800">
+              <div>
+                <p className="font-medium mb-1">1. Install dependencies</p>
+                <pre className="bg-gray-100 rounded-lg px-3 py-2 text-xs font-mono overflow-x-auto whitespace-pre-wrap">
+{`cd pySAR_frontend/backend
+pip install -r requirements.txt`}
+                </pre>
+              </div>
+              <div>
+                <p className="font-medium mb-1">2. Start the app <span className="font-normal text-gray-500">(recommended — starts backend + frontend together)</span></p>
+                <pre className="bg-gray-100 rounded-lg px-3 py-2 text-xs font-mono overflow-x-auto">
+{`cd pySAR_frontend
+chmod +x start.sh && ./start.sh`}
+                </pre>
+              </div>
+              <p className="text-gray-500 text-xs">
+                Or start the backend only:{' '}
+                <code className="bg-gray-100 rounded px-1 py-0.5 text-gray-800">uvicorn backend.main:app --reload --port 8000</code>
+              </p>
+            </div>
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                onClick={() => setShowBackendDialog(false)}
+                className="px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
