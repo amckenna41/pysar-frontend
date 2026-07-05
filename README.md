@@ -129,6 +129,11 @@ pySAR_frontend/
 | `GET` | `/api/jobs/{job_id}` | Return current status, log, and results for a job |
 | `GET` | `/api/jobs` | List all jobs (metadata only, no results payload) |
 | `DELETE` | `/api/jobs/{job_id}` | Remove a job from the registry |
+| `GET` | `/api/jobs/{job_id}/model` | Download the exported best model (`.pkl`) |
+| `POST` | `/api/jobs/{job_id}/predict` | Score new sequences with the exported best model |
+| `POST` | `/api/jobs/{job_id}/share` | Mint a read-only share token for a job |
+| `GET` | `/api/share/{token}` | Read a shared job's results (no session required) |
+| `GET` | `/api/embeddings/status` | Report PLM-embedding strategy availability |
 
 ## Data Format
 

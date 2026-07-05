@@ -16,6 +16,24 @@ const client = axios.create({
   timeout: 30_000,
 })
 
+// ── Session token — scopes job ownership server-side (see backend's
+// _get_or_create_session_id). The server mints one on first contact and echoes it
+// back via the X-Session-Id response header; we persist it and send it on every
+// subsequent request so /api/jobs only ever shows this browser's own jobs.
+const SESSION_STORAGE_KEY = 'pysar_session_id'
+
+client.interceptors.request.use((config) => {
+  const sessionId = localStorage.getItem(SESSION_STORAGE_KEY)
+  if (sessionId) config.headers['X-Session-Id'] = sessionId
+  return config
+})
+
+client.interceptors.response.use((response) => {
+  const sessionId = response.headers?.['x-session-id']
+  if (sessionId) localStorage.setItem(SESSION_STORAGE_KEY, sessionId)
+  return response
+})
+
 // ── Retry interceptor — retries up to 3 times on network errors or 503/502 ────
 // Uses exponential backoff (1s → 2s → 4s) to handle transient backend failures.
 const MAX_RETRIES = 3
@@ -194,10 +212,10 @@ export async function checkBackend() {
 
 // Hardcoded list — served as static assets from /example_datasets/, no backend needed
 const EXAMPLE_DATASETS = [
-  { name: 'thermostability',   filename: 'thermostability.txt',   description: 'Enzyme thermostability (T50) — 261 protein variants' },
-  { name: 'absorption',        filename: 'absorption.txt',        description: 'UV absorption wavelength — 179 fluorescent protein variants' },
-  { name: 'enantioselectivity',filename: 'enantioselectivity.txt',description: 'Enzyme enantioselectivity — 152 lipase variants' },
-  { name: 'localization',      filename: 'localization.txt',      description: 'Subcellular localization score — protein sequences' },
+  { name: 'thermostability',   filename: 'thermostability.txt',   description: 'Enzyme thermostability (T50) — 260 protein variants' },
+  { name: 'absorption',        filename: 'absorption.txt',        description: 'UV absorption wavelength — 80 fluorescent protein variants' },
+  { name: 'enantioselectivity',filename: 'enantioselectivity.txt',description: 'Enzyme enantioselectivity — 151 lipase variants' },
+  { name: 'localization',      filename: 'localization.txt',      description: 'Subcellular localization score — 253 protein sequences' },
 ]
 
 /**
@@ -279,6 +297,49 @@ export async function getDescriptors(backendOnline) {
   const res = await fetch('/descriptors.json')
   const data = await res.json()
   return data.descriptors
+}
+
+// ── Best model: export, predict, share (features 2 & 10) ─────────────────────────
+
+/** Download the pickled best model as a Blob (sends the session header). */
+export async function downloadBestModel(jobId) {
+  const { data } = await client.get(`/jobs/${jobId}/model`, { responseType: 'blob' })
+  return data
+}
+
+/**
+ * Score new sequences with a job's exported best model.
+ * @param {string} jobId
+ * @param {string[]} sequences
+ * @returns {Promise<{predictions: {sequence: string, prediction: number}[], model_name: string, task_type: string}>}
+ */
+export async function predictSequences(jobId, sequences) {
+  const { data } = await client.post(`/jobs/${jobId}/predict`, { sequences })
+  return data
+}
+
+/** Create (or fetch) a read-only share token for a completed job. */
+export async function createShareLink(jobId) {
+  const { data } = await client.post(`/jobs/${jobId}/share`)
+  return data.share_token
+}
+
+/** Fetch a shared job's read-only results by token (no session required). */
+export async function getSharedJob(token) {
+  const { data } = await client.get(`/share/${token}`)
+  return data
+}
+
+// ── Embedding strategy availability (feature 5) ──────────────────────────────────
+
+/** Report whether the PLM-embedding strategy is available on this backend. */
+export async function getEmbeddingStatus() {
+  try {
+    const { data } = await client.get('/embeddings/status', { timeout: 4000 })
+    return data
+  } catch {
+    return { available: false, models: [], default_model: null, reason: 'Backend unreachable.' }
+  }
 }
 
 // ── Health ─────────────────────────────────────────────────────────────────────

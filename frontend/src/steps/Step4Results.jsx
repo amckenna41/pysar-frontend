@@ -20,6 +20,8 @@ import {
 } from '@heroicons/react/24/outline'
 import { useAppStore } from '../store/appStore'
 import ResultsCharts, { PredictedActualChart } from '../components/ResultsCharts'
+import ModelInsights from '../components/ModelInsights'
+import { createShareLink } from '../utils/api'
 import toast from 'react-hot-toast'
 
 const METRIC_COLS = ['R2', 'RMSE', 'MSE', 'MAE', 'RPD', 'Explained_Var']
@@ -233,6 +235,19 @@ export default function Step4Results() {
     if (!results?.length) return
     const payload = { job_id: job?.job_id, strategy: job?.strategy, algorithm: job?.algorithm, results }
     downloadBlob(JSON.stringify(payload, null, 2), 'application/json', 'pysar_results.json')
+  }
+
+  // ── Share: mint a read-only link and copy it to the clipboard (feature 10) ──
+  async function handleShare() {
+    if (!job?.job_id) return
+    try {
+      const token = await createShareLink(job.job_id)
+      const url = `${window.location.origin}${window.location.pathname}?share=${token}`
+      await navigator.clipboard.writeText(url)
+      toast.success('Read-only share link copied to clipboard')
+    } catch {
+      toast.error('Could not create share link — the job may have expired.')
+    }
   }
 
   // ── PDF report export — captures summary, best model, top-N table, and config ──
@@ -870,7 +885,11 @@ export default function Step4Results() {
           <button className="btn-secondary text-xs" onClick={() => setShowPdfModal(true)} title="Customise and download PDF report">
             <ArrowDownTrayIcon className="w-3.5 h-3.5" /> PDF Report
           </button>
-
+          {job?.job_id && (
+            <button className="btn-secondary text-xs" onClick={handleShare} title="Create a read-only shareable link">
+              🔗 Share
+            </button>
+          )}
         </div>
       </div>
 
@@ -1173,6 +1192,8 @@ export default function Step4Results() {
             <PredictedActualChart predictions={job.best_model_predictions} disableAnimation={isPdfCapturing} />
           )}
           <ResultsCharts rows={rows} columns={resultColumns} disableAnimation={isPdfCapturing} />
+          {/* Model export, predict, feature importance, CV, confusion matrix, repro (features 2/3/4/6/7) */}
+          <ModelInsights job={job} encoding={encoding} dataset={dataset} />
         </div>
       )}
 

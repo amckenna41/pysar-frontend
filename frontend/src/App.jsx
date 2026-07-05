@@ -11,7 +11,11 @@ import Step1Upload from './steps/Step1Upload'
 import Step2Configure from './steps/Step2Configure'
 import Step3Encode from './steps/Step3Encode'
 import Step4Results from './steps/Step4Results'
+import SharedResults from './components/SharedResults'
 import { checkBackend } from './utils/api'
+
+// Read-only shared results are keyed off a ?share=<token> query param (feature 10).
+const SHARE_TOKEN = new URLSearchParams(window.location.search).get('share')
 
 const STEPS = {
   1: Step1Upload,
@@ -33,6 +37,15 @@ export default function App() {
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [step])
+
+  // A ?share=<token> link opens the read-only shared results, bypassing the app shell.
+  if (SHARE_TOKEN) {
+    return (
+      <ErrorBoundary>
+        <SharedResults token={SHARE_TOKEN} />
+      </ErrorBoundary>
+    )
+  }
 
   // Show landing page before entering the app
   if (showLanding) return <LandingPage />

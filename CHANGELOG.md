@@ -6,7 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased]
+## [2.5.6] — 2026-07-05
+
+### Added
+- **Best-model export & prediction** — completed jobs now persist their best-scoring model to disk. `GET /api/jobs/{job_id}/model` downloads it as a pickled `.pkl`, and `POST /api/jobs/{job_id}/predict` scores new sequences against it (returns `{predictions, model_name, task_type}`). Surfaced in the Results page via `ModelInsights` (download button + single-sequence prediction box) and the `downloadBestModel` / `predictSequences` helpers in `api.js`.
+- **Classification task type** — encoding jobs can now run as classification instead of regression. `EncodeRequest.task_type` (`"regression"` | `"classification"`) selects a self-contained sklearn layer in the new `backend/classification.py` module (pySAR's `Model` is regression-only). Classifiers: logistic regression, random forest, gradient boosting, HGBR, SVC, kNN, extra-trees, AdaBoost, bagging. Metrics: Accuracy, F1, AUC, Precision, Recall, plus a confusion matrix rendered in `ModelInsights`. The algorithm is validated against the task-appropriate whitelist at request time.
+- **PLM-embedding strategy** — a fourth encoding strategy, `"embedding"`, encodes sequences with a protein language model (ESM-2 / ProtT5) via the new `backend/embeddings.py`. `torch` + `transformers` are treated as **optional** dependencies: the module degrades gracefully when absent and `GET /api/embeddings/status` reports availability so the UI (`EncodeAdvancedOptions`) can gate the strategy instead of erroring mid-job. Model defaults to `facebook/esm2_t6_8M_UR50D` (overridable via `ESM_MODEL`); batch/length capped at 2000 seqs / 1024 residues to bound memory.
+- **Feature-importance chart** — for models that expose it, `ModelInsights` renders a feature-importance bar chart from the backend's `_feature_importance_from_model` output.
+- **Per-fold cross-validation distribution** — when CV is enabled, the per-fold scores are captured and displayed as a distribution panel in `ModelInsights`.
+- **Reproducibility export** — `frontend/src/utils/reproExport.js` turns a completed job + its parameters into a runnable pySAR Python snippet and the exact JSON config (copyable from `ModelInsights`), so a result can be reproduced outside the app.
+- **Leaderboard across jobs** — a 🏆 Leaderboard toggle in `JobsPanel` ranks every completed job by its headline metric (R² for regression, Accuracy for classification) via `buildLeaderboard`, with a task-type column.
+- **Read-only share links** — `POST /api/jobs/{job_id}/share` mints a share token; `GET /api/share/{token}` returns the job's results with no session required. A 🔗 Share button on the Results page copies a `?share=<token>` link to the clipboard, and `App.jsx` renders a trimmed, read-only `SharedResults` view (no download/predict) when that query param is present. Share tokens are re-registered on restart and pruned when their job is gone.
+- **Completion webhook** — `EncodeRequest.notify_webhook` fires a POST when a job finishes. Guarded by `_webhook_target_is_safe` (SSRF protection: rejects private/loopback/link-local targets) and validated at the schema boundary.
+- **Job persistence across restarts** — jobs are now written to a SQLite store and reloaded on startup (`_persist_job` / `_load_jobs_from_db`), so job history, exported models, and share links survive a backend restart.
+- **`.github/dependabot.yml`** — weekly Dependabot updates for npm (root + `frontend`), pip (`backend`), and GitHub Actions.
+
+### Changed
+- **Session-scoped ownership for jobs and datasets** — the API client now attaches an `X-Session-Id` header (captured/persisted via request/response interceptors in `api.js`); the backend registers jobs and datasets to a session and rejects cross-session access, so `/api/jobs` only ever shows the calling browser's own jobs.
+- **pySAR pinned to a commit SHA** — `backend/requirements.txt` now installs pySAR from a fixed commit (`68a256b5…`) instead of `@master`, so upstream pushes can't silently change production behaviour. `torch` / `transformers` are listed (commented out) as the opt-in extras for the embedding strategy.
+- **Payload bounds enforcement** — `_check_bounded_payload` walks `EncodeRequest` model-parameter / config objects and rejects over-deep or over-large payloads before a job is queued.
+
+### Security
+- **`X-Forwarded-For` trusted-hop count** — `_get_client_ip` now honours `_trust_proxy_hops()` (number of trusted proxies) when `TRUST_PROXY` is set, taking the correct client IP from the header chain rather than a spoofable edge value, tightening per-IP rate limiting behind known proxies.
+- **Webhook SSRF guard** — completion webhooks are only fired to public HTTP(S) targets; private, loopback, and link-local addresses are rejected by `_webhook_target_is_safe`.
+
+### Tests
+- **`tests/backend/test_api_model.py`** (14 tests) — best-model export/download and `/predict` scoring, including task-type handling and ownership.
+- **`tests/backend/test_api_share.py`** (8 tests) — share-token minting, read-only fetch by token, and orphan-token pruning.
+- **`tests/backend/test_classification.py`** (11 tests) — the standalone `backend/classification.py` layer against synthetic data (metrics, classifier whitelist, error paths).
+- **`tests/backend/test_embeddings.py`** (3 tests) — optional-dependency gating and the `status()` availability payload when torch/transformers are absent.
+- **`tests/backend/test_client_ip.py`** (6 tests) — `_get_client_ip` / `_trust_proxy_hops` behaviour with and without `TRUST_PROXY`.
+- **`frontend/src/__tests__/unit/reproExport.test.js`** (7 tests) — `buildPysarConfig` / `generatePythonSnippet` output.
+- **`frontend/src/__tests__/unit/leaderboard.test.js`** (5 tests) — `buildLeaderboard` ranking and task-type handling.
+- **`tests/backend/conftest.py`** — the `client` fixture now sends a fixed `X-Session-Id` so ownership checks pass; the autouse `clean_jobs` fixture also clears the SQLite job store and exported-model directories between tests.
+- **`api.test.js`** — the axios mock now stubs the request interceptor (session-token attach) alongside the response interceptor.
 
 ### Added
 - **Progress connector in sidebar nav** — a thin vertical line now connects adjacent step badges in the sidebar, coloured green when the step is completed and gray otherwise, giving a clear visual trail through the workflow.

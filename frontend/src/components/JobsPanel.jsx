@@ -139,6 +139,7 @@ export default function JobsPanel() {
   const [comparing, setComparing]       = useState([])          // max 2 job ids for compare
   const [confirmBulkDel, setConfirmBulkDel] = useState(false)  // inline confirm for bulk delete
   const [confirmClear, setConfirmClear]     = useState(false)  // inline confirm for clear all
+  const [showLeaderboard, setShowLeaderboard] = useState(false)  // leaderboard view (feature 8)
 
   function toggleExpand(id) { setExpanded((prev) => (prev === id ? null : id)) }
 
@@ -276,8 +277,17 @@ export default function JobsPanel() {
             Clear filter
           </button>
         )}
-        <span className="text-xs text-gray-400 ml-auto">{jobHistory.length} total</span>
+        <button
+          type="button"
+          onClick={() => setShowLeaderboard((v) => !v)}
+          className={`text-xs font-medium px-2.5 py-1 rounded-full ml-auto transition-colors ${showLeaderboard ? 'bg-indigo-600 text-white' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200'}`}
+        >
+          🏆 Leaderboard
+        </button>
+        <span className="text-xs text-gray-400">{jobHistory.length} total</span>
       </div>
+
+      {showLeaderboard && <LeaderboardPanel jobs={jobHistory} />}
 
       {/* ── 4. Search bar + 1. Filter toggle + 2. Export + clear-all toolbar ── */}
       <div className="flex items-center gap-2">
@@ -702,6 +712,71 @@ function Detail({ label, value, mono = false }) {
     <div>
       <span className="text-gray-400 font-medium">{label}: </span>
       <span className={mono ? 'font-mono text-gray-700' : 'text-gray-700'}>{value ?? '—'}</span>
+    </div>
+  )
+}
+
+// ── Leaderboard across all completed jobs (feature 8) ─────────────────────────────
+// Ranks every completed job by its best metric, with the winning strategy+algorithm
+// combo surfaced. Complements the 2-job compare with an N-job overview.
+export function buildLeaderboard(jobs) {
+  return (jobs || [])
+    .filter((j) => j.status === 'completed' && (j.best_metric != null || j.best_r2 != null))
+    .map((j) => ({
+      id: j.id ?? j.job_id,
+      strategy: j.strategy ?? '—',
+      algorithm: j.algorithm ?? '—',
+      task_type: j.task_type ?? 'regression',
+      metric_name: j.metric_name ?? 'R²',
+      metric: j.best_metric ?? j.best_r2,
+      dataset: j.dataset_filename ?? '—',
+      when: j.completed_at ?? j.submitted_at,
+    }))
+    .sort((a, b) => (b.metric ?? -Infinity) - (a.metric ?? -Infinity))
+}
+
+function LeaderboardPanel({ jobs }) {
+  const rows = useMemo(() => buildLeaderboard(jobs), [jobs])
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-4 text-sm text-gray-400 text-center">
+        No completed jobs to rank yet.
+      </div>
+    )
+  }
+  const best = rows[0].metric
+  return (
+    <div className="rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50/40 dark:bg-indigo-900/10 overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-left text-gray-500 dark:text-gray-400 border-b border-indigo-100 dark:border-indigo-800">
+            <th className="px-3 py-2">#</th>
+            <th className="px-3 py-2">Strategy</th>
+            <th className="px-3 py-2">Algorithm</th>
+            <th className="px-3 py-2">Task</th>
+            <th className="px-3 py-2">Best metric</th>
+            <th className="px-3 py-2">Dataset</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={r.id} className="border-b border-indigo-50 dark:border-indigo-900/40 last:border-0">
+              <td className="px-3 py-2 font-semibold">{i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1}</td>
+              <td className="px-3 py-2">{r.strategy}</td>
+              <td className="px-3 py-2 font-mono">{r.algorithm}</td>
+              <td className="px-3 py-2">{r.task_type === 'classification' ? 'Class.' : 'Regr.'}</td>
+              <td className="px-3 py-2 font-mono">
+                <span className="font-semibold text-indigo-700 dark:text-indigo-300">
+                  {typeof r.metric === 'number' ? r.metric.toFixed(4) : '—'}
+                </span>
+                <span className="text-gray-400"> {r.metric_name}</span>
+                {r.metric === best && <span className="ml-1">⭐</span>}
+              </td>
+              <td className="px-3 py-2 truncate max-w-[140px]" title={r.dataset}>{r.dataset}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }

@@ -41,9 +41,14 @@ from backend.main import (  # noqa: E402
     _CANCEL_EVENTS,
     _CANCEL_PROCESSES,
     _RATE_LIMIT_STORE,
+    _jobs_db_conn,
     UPLOAD_DIR,
     app,
 )
+
+# Fixed session id the TestClient sends on every request (see `client` fixture below),
+# and the value job-injection fixtures below stamp onto jobs so ownership checks pass.
+TEST_SESSION_ID = str(uuid.uuid4())
 
 # ── Sample dataset content (CSV/TSV) ──────────────────────────────────────────
 
@@ -145,21 +150,48 @@ def client() -> Generator:
     Session-scoped TestClient.
     Starlette's TestClient runs startup/shutdown events once per session.
     JOBS and rate-limit state are cleared per-test by autouse fixtures.
+    Sends a fixed X-Session-Id on every request so job-ownership checks (which are
+    session-scoped, not IP-scoped) pass consistently across all tests.
     """
     with TestClient(app) as c:
+        c.headers["X-Session-Id"] = TEST_SESSION_ID
         yield c
+
+
+def _clear_jobs_db() -> None:
+    import sqlite3
+    try:
+        _jobs_db_conn.execute("DELETE FROM jobs")
+        _jobs_db_conn.commit()
+    except sqlite3.OperationalError:
+        # The app shares this connection across threads (check_same_thread=False); a
+        # concurrent write can leave no active transaction for our commit to close.
+        # Cleanup is best-effort, so tolerate that rather than failing teardown.
+        pass
+
+
+def _clear_model_dirs() -> None:
+    import shutil
+    from backend.main import _MODELS_DIR
+    shutil.rmtree(_MODELS_DIR, ignore_errors=True)
+    _MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @pytest.fixture(autouse=True)
 def clean_jobs():
-    """Ensure JOBS, _CANCEL_EVENTS, and _CANCEL_PROCESSES are empty before and after each test."""
+    """Ensure JOBS, _CANCEL_EVENTS, _CANCEL_PROCESSES, the SQLite job store, and the
+    exported-model directories are empty before and after each test."""
     JOBS.clear()
     _CANCEL_EVENTS.clear()
     _CANCEL_PROCESSES.clear()
+    _clear_jobs_db()
+    _clear_model_dirs()
     yield
     JOBS.clear()
     _CANCEL_EVENTS.clear()
     _CANCEL_PROCESSES.clear()
+    _clear_jobs_db()
+    _clear_model_dirs()
 
 
 @pytest.fixture(autouse=True)
@@ -193,6 +225,8 @@ def inline_encoding(monkeypatch):
 
     class _FakeProcess:
         """Synchronous stub — puts result in queue on start(), terminatable no-op."""
+        pid = -1  # a started multiprocessing.Process always exposes a pid; _run_job logs it
+
         def __init__(self, target, args=(), daemon=False):
             self._q = args[0]  # queue is always the first positional arg
 
@@ -293,6 +327,8 @@ def completed_job():
         "error": None,
         "strategy": "aai",
         "algorithm": "plsregression",
+        "ip": "testclient",  # matches Starlette TestClient's default request.client.host
+        "session_id": TEST_SESSION_ID,  # matches the header the `client` fixture sends
         "created_at": "2026-04-21T12:00:00+00:00",
         "started_at": "2026-04-21T12:00:01+00:00",
         "completed_at": "2026-04-21T12:01:15+00:00",
@@ -319,6 +355,8 @@ def running_job():
         "error": None,
         "strategy": "aai",
         "algorithm": "plsregression",
+        "ip": "testclient",  # matches Starlette TestClient's default request.client.host
+        "session_id": TEST_SESSION_ID,  # matches the header the `client` fixture sends
         "created_at": "2026-04-21T12:00:00+00:00",
         "started_at": "2026-04-21T12:00:01+00:00",
         "completed_at": None,

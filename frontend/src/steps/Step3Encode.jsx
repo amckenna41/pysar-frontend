@@ -22,8 +22,9 @@ import toast from 'react-hot-toast'
 import { useAppStore } from '../store/appStore'
 import { startEncoding, getJob, getAaiIndicesFull, cancelJob, getDescriptors, uploadDataset, checkBackend } from '../utils/api'
 import { toastApiError } from '../utils/errorHandling'
+import EncodeAdvancedOptions from '../components/EncodeAdvancedOptions'
 
-// ── Descriptor names loaded from backend (pySAR v2.5.1) ──────────────────────
+// ── Descriptor names loaded from backend (pySAR v2.5.6) ──────────────────────
 // Falls back to empty array until the fetch resolves; shown in the multi-select grid
 
 // Autocorrelation descriptors — require sequences >= lag residues
@@ -56,6 +57,13 @@ const STRATEGIES = [
     Icon: BoltIcon,
     description: 'Combine AAI index encodings with descriptor features for potentially enhanced predictability.',
     modelCount: '~8 500 – ~257 000 models',
+  },
+  {
+    id: 'embedding',
+    label: 'PLM Embeddings',
+    Icon: SparklesIcon,
+    description: 'Encode sequences with a protein language model (ESM-2 / ProtT5). Requires the embedding-enabled backend.',
+    modelCount: '1 model (mean-pooled embedding)',
   },
 ]
 
@@ -285,10 +293,19 @@ export default function Step3Encode() {
         currentInterval = MIN_INTERVAL  // reset backoff on successful response
         updateJob(data)
         if (data.status === 'completed') {
-          // Store best R², R² summary (top 30) and duration in history entry
+          // Store best metric, metric summary (top 30) and duration in history entry.
+          // Classification jobs report Accuracy instead of R² (feature 4).
+          const isClf = data.task_type === 'classification'
+          const metricKey = isClf ? 'Accuracy' : 'R2'
           const best_r2 = data.results?.[0]?.R2 ?? null
-          const result_summary = (data.results ?? []).slice(0, 30).map((r) => r.R2).filter((v) => typeof v === 'number')
-          updateJobHistoryStatus(job.job_id, { status: 'completed', best_r2, result_summary, completed_at: new Date().toISOString(), duration_ms: startTs ? Date.now() - startTs : null })
+          const best_metric = data.results?.[0]?.[metricKey] ?? null
+          const result_summary = (data.results ?? []).slice(0, 30).map((r) => r[metricKey]).filter((v) => typeof v === 'number')
+          updateJobHistoryStatus(job.job_id, {
+            status: 'completed', best_r2, best_metric,
+            metric_name: isClf ? 'Accuracy' : 'R²', task_type: data.task_type || 'regression',
+            result_summary, completed_at: new Date().toISOString(),
+            duration_ms: startTs ? Date.now() - startTs : null,
+          })
           setResults(data.results, data.columns)
           toast.success(`Encoding complete — ${data.results?.length} models evaluated`)
           // Auto-start next queued job if any
@@ -378,6 +395,9 @@ export default function Step3Encode() {
       random_state:         encoding.random_state ? parseInt(encoding.random_state, 10) : null,
       use_cv:               config.model.use_cv ?? false,
       cv_folds:             config.model.cv_folds ?? 5,
+      task_type:            encoding.task_type ?? 'regression',
+      embedding_model:      encoding.strategy === 'embedding' ? (encoding.embedding_model || null) : null,
+      notify_webhook:       encoding.notify_webhook?.trim() ? encoding.notify_webhook.trim() : null,
     }
   }
 
@@ -587,6 +607,9 @@ export default function Step3Encode() {
           })}
         </div>
       </div>
+
+      {/* ── Advanced options: task type, embedding model, webhook (features 4/5/10) ── */}
+      <EncodeAdvancedOptions encoding={encoding} setEncoding={setEncoding} disabled={isRunning} />
 
       {/* ── AAI indices input (shown for aai / aai_descriptor) ── */}
       {(encoding.strategy === 'aai' || encoding.strategy === 'aai_descriptor') && (

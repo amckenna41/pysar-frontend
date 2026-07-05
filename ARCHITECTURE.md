@@ -296,7 +296,7 @@ A custom sliding-window rate limiter (no external dependency) runs as ASGI middl
 | `POST /api/encode` | 5 requests / 60 s per IP |
 | `POST /api/upload` | 20 requests / 60 s per IP |
 
-The real client IP is read from `X-Forwarded-For` only when `TRUST_PROXY=true` (set on Cloud Run to handle the GCP load balancer hop).
+The real client IP is derived from `X-Forwarded-For` by reading the entry `TRUST_PROXY_HOPS` positions from the **right** — the rightmost entries are appended by trusted infrastructure and can't be forged, while anything to their left is client-controlled. Set `TRUST_PROXY_HOPS` to the number of trusted proxies in front of the app (Cloud Run / GCLB = 1). The legacy `TRUST_PROXY=true` is still honoured and maps to one hop. When unset (0), the socket peer is used and `X-Forwarded-For` is ignored entirely, so a client can't rotate its apparent IP to bypass the per-IP rate limit or concurrent-job cap.
 
 ### CORS
 

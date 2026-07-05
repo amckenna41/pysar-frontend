@@ -24,8 +24,9 @@ vi.mock('axios', () => ({
       get:    mockGet,
       post:   mockPost,
       delete: mockDelete,
-      // Required by the retry interceptor registered in api.js
-      interceptors: { response: { use: vi.fn() } },
+      // Required by the request/response interceptors registered in api.js
+      // (session-token attach/capture, retry-on-failure)
+      interceptors: { request: { use: vi.fn() }, response: { use: vi.fn() } },
     }),
   },
 }))

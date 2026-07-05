@@ -42,7 +42,7 @@ export const DEFAULT_CONFIG = {
     quasi_sequence_order: { lag: 30, weight: 0.1, distance_matrix: 'schneider-wrede' },
     pseudo_amino_acid_composition: { lambda: 30, weight: 0.05, properties: [] },
     amphiphilic_pseudo_amino_acid_composition: { lambda: 30, weight: 0.5 },
-    // New configurable descriptors added in pySAR v2.5.1 / protpy v1.3.0
+    // New configurable descriptors added in pySAR v2.5.6 / protpy v1.3.0
     charge_distribution: { ph: 7.4 },
     kmer_composition: { k: 2 },
     reduced_alphabet_composition: { alphabet_size: 6 },
@@ -72,7 +72,9 @@ export const DEFAULT_CONFIG = {
 }
 
 const DEFAULT_ENCODING = {
-  strategy: 'aai',           // 'aai' | 'descriptor' | 'aai_descriptor'
+  strategy: 'aai',           // 'aai' | 'descriptor' | 'aai_descriptor' | 'embedding'
+  task_type: 'regression',   // 'regression' | 'classification' (feature 4)
+  embedding_model: '',        // PLM checkpoint for the embedding strategy (feature 5)
   aai_indices: [],            // [] means "all"
   selected_descriptors: [],   // [] means "all"
   desc_combo: 1,
@@ -81,6 +83,7 @@ const DEFAULT_ENCODING = {
   max_models: '',
   sample_mode: false,
   random_state: '',
+  notify_webhook: '',         // optional completion webhook (feature 10)
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
