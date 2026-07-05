@@ -39,13 +39,20 @@ client.interceptors.response.use((response) => {
 const MAX_RETRIES = 3
 client.interceptors.response.use(null, async (error) => {
   const config = error.config
-  // Only retry safe/idempotent methods; skip if already retried max times
+  // Only retry on cold-start signals: a network error (no response) or a 502/503
+  // from the platform proxy. All three mean the request never reached the app's
+  // route handler, so replaying it is safe even for POST — critically, this covers
+  // the first upload/encode after a free-tier backend has spun down.
+  // ponytail: a 502/503 emitted *after* partial app-side processing would be
+  // retried too, but the app returns 500 (not retried) for its own errors, so in
+  // practice only proxy-level pre-handler failures reach here.
   const isRetryable =
     !error.response ||
     error.response.status === 503 ||
     error.response.status === 502
+  const method = (config.method ?? '').toLowerCase()
   const attempt = config._retryCount ?? 0
-  if (isRetryable && attempt < MAX_RETRIES && ['get', 'GET'].includes(config.method ?? '')) {
+  if (isRetryable && attempt < MAX_RETRIES && (method === 'get' || method === 'post')) {
     config._retryCount = attempt + 1
     const delay = Math.pow(2, attempt) * 1000  // 1s, 2s, 4s
     await new Promise((res) => setTimeout(res, delay))
@@ -198,16 +205,51 @@ export async function fixOutliers(fileId, seqCol, actCol, method) {
 }
 
 /**
- * Ping the backend health endpoint. Returns true if reachable, false otherwise.
+ * Single /health probe. Bypasses the retry interceptor (_retryCount) so callers
+ * control their own polling cadence.
+ * @param {number} timeout  per-request timeout in ms
  * @returns {Promise<boolean>}
  */
-export async function checkBackend() {
+async function pingHealth(timeout) {
   try {
-    await client.get('/health', { timeout: 4000 })
+    await client.get('/health', { timeout, _retryCount: MAX_RETRIES })
     return true
   } catch {
     return false
   }
+}
+
+/**
+ * Ping the backend health endpoint once. Returns true if reachable, false otherwise.
+ * @returns {Promise<boolean>}
+ */
+export async function checkBackend() {
+  return pingHealth(4000)
+}
+
+/**
+ * Probe the backend, actively waiting out a cold start. Free-tier / min-instances=0
+ * platforms (Railway, Render, Fly.io) spin down after inactivity and take 30–60s to
+ * wake, during which the first request would otherwise hard-fail.
+ *
+ * Returns true as soon as /health responds, or false if still unreachable after ~60s.
+ * Calls onCold() the first time a probe fails, so the caller can show a "waking up…"
+ * banner only when the backend is actually cold — a warm backend returns on the first
+ * ping and onCold never fires, avoiding a banner flash.
+ * @param {() => void} [onCold]
+ * @returns {Promise<boolean>}
+ */
+export async function wakeBackend(onCold) {
+  if (await pingHealth(4000)) return true
+  onCold?.()
+  const deadline = Date.now() + 60_000
+  let delay = 2000
+  while (Date.now() < deadline) {
+    await new Promise((res) => setTimeout(res, delay))
+    if (await pingHealth(8000)) return true
+    delay = Math.min(delay * 1.5, 8000)  // 2s → 3s → 4.5s → … → 8s cap
+  }
+  return false
 }
 
 // Hardcoded list — served as static assets from /example_datasets/, no backend needed

@@ -23,7 +23,7 @@ Interactive React + FastAPI interface for the [pySAR](https://github.com/amckenn
 
 | Requirement | Version |
 |-------------|---------|
-| Python | ≥ 3.8 |
+| Python | ≥ 3.10 |
 | Node.js | ≥ 18 |
 | npm | ≥ 9 |
 | pySAR installed in your Python env | see parent `requirements.txt` |

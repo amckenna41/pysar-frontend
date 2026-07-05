@@ -449,6 +449,15 @@ _MAX_CONCURRENT_JOBS_PER_IP = 3
 # max_models/desc_combo caps below, this stops a single client from monopolizing the
 # one-instance backend indefinitely — a request could otherwise stay just under the
 # model-count ceiling yet still run for hours depending on dataset size/algorithm.
+#
+# Deployment note: encoding runs in a daemon background thread (see /api/encode), so
+# this cap is NOT bound by the platform's HTTP request timeout — /encode returns a
+# job_id immediately and the client polls. The load-bearing platform requirement is
+# that CPU stays allocated between the (short) poll requests: Cloud Run gets this via
+# --no-cpu-throttling + --min-instances=1 (see cloudbuild.yaml). On platforms that
+# throttle idle CPU or spin down between requests, raise MAX_JOB_DURATION_SECS's
+# effective limit won't help — the thread simply pauses/dies. Keep this default well
+# under any platform hard cap on instance lifetime.
 _MAX_JOB_DURATION_SECS = int(os.environ.get("MAX_JOB_DURATION_SECS", 1800))  # default 30 min
 
 # Maximum accepted upload size; overridable via MAX_UPLOAD_MB env var

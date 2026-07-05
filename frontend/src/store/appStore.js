@@ -127,6 +127,9 @@ export const useAppStore = create(
   // null = not yet checked, true = reachable, false = unreachable
   backendOnline: null,
   setBackendOnline: (v) => set({ backendOnline: v }),
+  // True while a cold backend is being woken (drives the "waking up…" banner).
+  backendWaking: false,
+  setBackendWaking: (v) => set({ backendWaking: v }),
 
   // ── Landing page visibility ──
   showLanding: true,

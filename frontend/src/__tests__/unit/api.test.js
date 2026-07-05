@@ -46,6 +46,7 @@ const {
   cancelJob,
   listJobs,
   checkBackend,
+  wakeBackend,
   getExampleDatasets,
   loadExampleDataset,
   getAaiIndices,
@@ -165,6 +166,46 @@ describe('api.checkBackend', () => {
     const err = new Error('timeout'); err.code = 'ECONNABORTED'
     mockGet.mockRejectedValue(err)
     expect(await checkBackend()).toBe(false)
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────────────
+// wakeBackend
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('api.wakeBackend', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('returns true immediately on a warm backend without signalling cold', async () => {
+    mockGet.mockResolvedValue({ data: { status: 'ok' } })
+    const onCold = vi.fn()
+    await expect(wakeBackend(onCold)).resolves.toBe(true)
+    expect(onCold).not.toHaveBeenCalled()
+    expect(mockGet).toHaveBeenCalledOnce()
+  })
+
+  it('signals cold once, then resolves true when the backend wakes', async () => {
+    // First probe fails (cold), second succeeds.
+    mockGet
+      .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+      .mockResolvedValue({ data: { status: 'ok' } })
+    const onCold = vi.fn()
+    const promise = wakeBackend(onCold)
+    await vi.runAllTimersAsync()
+    await expect(promise).resolves.toBe(true)
+    expect(onCold).toHaveBeenCalledOnce()
+  })
+
+  it('returns false if the backend never comes up within the window', async () => {
+    mockGet.mockRejectedValue(new Error('ECONNREFUSED'))
+    const promise = wakeBackend()
+    await vi.runAllTimersAsync()
+    await expect(promise).resolves.toBe(false)
   })
 })
 
