@@ -242,14 +242,6 @@ export default function LandingPage() {
             <GitHubIcon className="w-4 h-4" />
             GitHub
           </a>
-          <a
-            href="https://doi.org/10.1016/j.jbi.2022.104016"
-            target="_blank"
-            rel="noreferrer"
-            className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
-          >
-            Research Paper
-          </a>
           <button
             onClick={enterApp}
             className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors"

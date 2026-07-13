@@ -7,11 +7,20 @@
  * The backend route `/api/encode` is mocked so pySAR is never invoked.
  */
 import { test, expect } from '@playwright/test'
-import { SMALL_CSV, toBuffer } from './fixtures/datasets.js'
+import { SMALL_CSV, toBuffer, mockUploadResponse } from './fixtures/datasets.js'
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
 async function goToStep3(page) {
+  // Mock the upload endpoint — this suite only needs Step 1 completed, and
+  // hitting the real endpoint repeatedly trips the backend's upload rate limit.
+  await page.route('**/api/upload', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(mockUploadResponse()),
+    })
+  )
   await page.goto('/')
   const cta = page.getByRole('button', { name: /enter|get started|start|launch/i })
     .or(page.getByRole('link', { name: /enter|get started|start|launch/i }))
@@ -118,12 +127,12 @@ test.describe('Step 3 — Encode', () => {
   // ── Job submission ─────────────────────────────────────────────────────────
 
   test('Submit / Run button is visible', async ({ page }) => {
-    const submitBtn = page.getByRole('button', { name: /run|submit|start encoding|encode/i }).first()
+    const submitBtn = page.getByRole('button', { name: /run|submit|start encoding|encode/i }).last()
     await expect(submitBtn).toBeVisible()
   })
 
   test('clicking Submit triggers job polling and shows progress', async ({ page }) => {
-    const submitBtn = page.getByRole('button', { name: /run|submit|start encoding|encode/i }).first()
+    const submitBtn = page.getByRole('button', { name: /run|submit|start encoding|encode/i }).last()
     await submitBtn.click()
     // Progress or status indicator should appear
     await expect(page.getByText(/running|progress|pending|loading/i).first())
@@ -131,7 +140,7 @@ test.describe('Step 3 — Encode', () => {
   })
 
   test('job completes and results are shown', async ({ page }) => {
-    const submitBtn = page.getByRole('button', { name: /run|submit|start encoding|encode/i }).first()
+    const submitBtn = page.getByRole('button', { name: /run|submit|start encoding|encode/i }).last()
     await submitBtn.click()
     // Wait for completed status to appear
     await expect(page.getByText(/complete|results|R²|R2/i).first())
@@ -141,7 +150,7 @@ test.describe('Step 3 — Encode', () => {
   // ── Log panel ──────────────────────────────────────────────────────────────
 
   test('log panel shows log entries after submission', async ({ page }) => {
-    const submitBtn = page.getByRole('button', { name: /run|submit|start encoding|encode/i }).first()
+    const submitBtn = page.getByRole('button', { name: /run|submit|start encoding|encode/i }).last()
     await submitBtn.click()
     await expect(page.getByText(/Dataset loaded|Strategy:/i).first())
       .toBeVisible({ timeout: 10000 })

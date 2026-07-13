@@ -6,11 +6,20 @@
  * and config import/export.
  */
 import { test, expect } from '@playwright/test'
-import { SMALL_CSV, toBuffer } from './fixtures/datasets.js'
+import { SMALL_CSV, toBuffer, mockUploadResponse } from './fixtures/datasets.js'
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
 async function goToStep2(page) {
+  // Mock the upload endpoint — this suite only needs Step 1 completed, and
+  // hitting the real endpoint repeatedly trips the backend's upload rate limit.
+  await page.route('**/api/upload', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(mockUploadResponse()),
+    })
+  )
   await page.goto('/')
   const cta = page.getByRole('button', { name: /enter|get started|start|launch/i })
     .or(page.getByRole('link', { name: /enter|get started|start|launch/i }))
@@ -57,11 +66,16 @@ test.describe('Step 2 — Configure', () => {
   })
 
   test('DSP tab is clickable', async ({ page }) => {
-    const tab = page.getByRole('tab', { name: /dsp|signal/i })
-      .or(page.getByText(/DSP|digital signal/i))
+    // Tabs are plain buttons with an exact label — a loose text match also
+    // matches the "optional DSP settings" description above the tab bar.
+    const tab = page.getByRole('button', { name: 'DSP', exact: true })
     if (await tab.count() > 0) {
-      await tab.first().click()
-      await expect(page.getByText(/spectrum|window|filter/i).first()).toBeVisible({ timeout: 3000 })
+      await tab.click()
+      // Spectrum/window/filter settings are hidden until DSP is enabled.
+      // Target the visible field labels — a loose text match also matches a
+      // hidden hover-tooltip that happens to mention "spectrum, window, and filter".
+      await page.getByRole('switch').click()
+      await expect(page.getByText(/output spectrum|window function/i).first()).toBeVisible({ timeout: 3000 })
     }
   })
 

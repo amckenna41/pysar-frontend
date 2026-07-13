@@ -58,3 +58,34 @@ export const DUPLICATE_CSV = [
 export function toBuffer(str) {
   return Buffer.from(str, 'utf-8')
 }
+
+/**
+ * Canned /api/upload response for SMALL_CSV, shaped like the real backend
+ * response. Used to mock the upload route so tests that only need Step 1
+ * completed (configure/encode/results specs) don't burn the real 20-req/60s
+ * upload rate limit shared with upload.spec.js's real-upload tests.
+ */
+export function mockUploadResponse() {
+  return {
+    file_id: 'mock-file-id',
+    filename: 'test.csv',
+    file_path: '/tmp/mock-file-id.csv',
+    columns: ['sequence', 'T50'],
+    num_rows: 3,
+    preview: [
+      { sequence: 'ACDE', T50: 55.0 },
+      { sequence: 'FGHI', T50: 60.0 },
+      { sequence: 'KLMN', T50: 65.0 },
+    ],
+    seq_col_guess: 'sequence',
+    act_col_guess: 'T50',
+    seq_guess_confidence: 'high',
+    act_guess_confidence: 'high',
+    length_stats: { min: 4, max: 4, mean: 4.0, distribution: [{ bin: 4, count: 3 }] },
+    activity_stats: { min: 55.0, max: 65.0, mean: 60.0, std: 5.0, skewness: 0.0, kurtosis: null, histogram: [], log_histogram: [] },
+    seq_validation: { valid: true, invalid_count: 0, warnings: [], invalid_row_indices: [], invalid_rows: [] },
+    duplicate_info: { has_duplicates: false, duplicate_count: 0, unique_count: 3, duplicate_row_indices: [], duplicate_rows: [] },
+    missing_info: { seq_missing: 0, act_missing: 0, has_missing: false, seq_missing_row_indices: [], act_missing_row_indices: [], seq_missing_rows: [], act_missing_rows: [] },
+    outlier_info: { outlier_count: 0, outlier_indices: [], outlier_values: [], outlier_rows: [] },
+  }
+}

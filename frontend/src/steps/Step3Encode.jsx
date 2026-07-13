@@ -446,8 +446,11 @@ export default function Step3Encode() {
         return
       }
     }
-    // Block if any autocorrelation descriptor lag exceeds the shortest sequence
-    if (descWarnings.length > 0) {
+    // Block if any autocorrelation descriptor lag exceeds the shortest sequence.
+    // Only relevant when descriptors are actually part of the encoding strategy —
+    // mirrors the banner visibility condition below, which is descriptor-only.
+    const usesDescriptors = encoding.strategy === 'descriptor' || encoding.strategy === 'aai_descriptor'
+    if (usesDescriptors && descWarnings.length > 0) {
       toast.error(
         `Lag exceeds shortest sequence (${descWarnings[0]?.minLen} residues) — deselect or shorten lag for: ${descWarnings.map((w) => snakeToTitle(w.descriptor)).join(', ')}`,
         { duration: 6000 }

@@ -33,6 +33,8 @@ test.describe('Step 1 — Upload', () => {
   })
 
   test('example dataset buttons are visible', async ({ page }) => {
+    // Sample datasets are behind a collapsed "Or try a sample dataset" toggle
+    await page.getByRole('button', { name: /sample dataset/i }).click()
     // Each example dataset should have a clickable button or link
     await expect(page.getByText(/thermostability/i).first()).toBeVisible()
   })
@@ -98,9 +100,10 @@ test.describe('Step 1 — Upload', () => {
   // ── Example datasets ───────────────────────────────────────────────────────
 
   test('clicking thermostability example loads dataset', async ({ page }) => {
-    const btn = page.getByRole('button', { name: /thermostability/i })
-      .or(page.getByText(/thermostability/i))
-    await btn.first().click()
+    // Sample datasets are behind a collapsed "Or try a sample dataset" toggle
+    await page.getByRole('button', { name: /sample dataset/i }).click()
+    const card = page.locator('.card', { hasText: /thermostability/i }).first()
+    await card.getByRole('button', { name: /use/i }).click()
     // Preview should appear without a file upload
     await expect(
       page.getByText(/rows|sequences|preview/i).first()

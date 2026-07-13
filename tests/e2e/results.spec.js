@@ -7,7 +7,7 @@
  * No real pySAR encoding is performed.
  */
 import { test, expect } from '@playwright/test'
-import { SMALL_CSV, toBuffer } from './fixtures/datasets.js'
+import { SMALL_CSV, toBuffer, mockUploadResponse } from './fixtures/datasets.js'
 
 // ── synthetic job data ─────────────────────────────────────────────────────────
 
@@ -36,7 +36,15 @@ const MOCK_JOB = {
 // ── helpers ────────────────────────────────────────────────────────────────────
 
 async function goToResults(page) {
-  // Mock all encode and job routes upfront
+  // Mock upload/encode/job routes upfront — hitting the real upload endpoint
+  // repeatedly across this suite trips the backend's upload rate limit.
+  await page.route('**/api/upload', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(mockUploadResponse()),
+    })
+  )
   await page.route('**/api/encode', (route) =>
     route.fulfill({
       status: 200,
@@ -73,12 +81,13 @@ async function goToResults(page) {
 
   // Step 3: submit encoding job
   await expect(page.getByText(/strategy|encode/i).first()).toBeVisible({ timeout: 5000 })
-  const submitBtn = page.getByRole('button', { name: /run|submit|start encoding|encode/i }).first()
+  const submitBtn = page.getByRole('button', { name: /run|submit|start encoding|encode/i }).last()
   await submitBtn.click()
 
-  // Wait for results page (job completed immediately via mock)
-  await expect(page.getByText(/complete|results|R²|R2|ALTS910101/i).first())
-    .toBeVisible({ timeout: 15000 })
+  // Job completes immediately via mock — the app doesn't auto-navigate, so
+  // click through to the Results step once it's done.
+  await page.getByRole('button', { name: /view results/i }).click({ timeout: 15000 })
+  await expect(page.getByText('ALTS910101').first()).toBeVisible({ timeout: 5000 })
 }
 
 test.describe('Step 4 — Results', () => {
@@ -125,8 +134,9 @@ test.describe('Step 4 — Results', () => {
   // ── Charts ─────────────────────────────────────────────────────────────────
 
   test('predicted vs actual chart is displayed', async ({ page }) => {
-    // Recharts renders SVG or canvas
-    const chart = page.locator('svg, canvas, [data-testid*="chart"]').first()
+    // Recharts renders an SVG with this class — a plain 'svg' selector also
+    // matches the (hidden) icon SVGs used throughout the nav/toolbar.
+    const chart = page.locator('.recharts-surface, canvas, [data-testid*="chart"]').first()
     await expect(chart).toBeVisible()
   })
 
