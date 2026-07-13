@@ -22,6 +22,23 @@ class TestShareLinks:
         # Owner identifiers are stripped from the shared payload.
         assert "session_id" not in body and "ip" not in body
 
+    def test_shared_payload_redacts_server_paths(self, client, completed_job):
+        # Stamp the fields a real job would carry so we can assert they're stripped.
+        JOBS[completed_job].update({
+            "file_path": "/tmp/pysar_frontend/secret.csv",
+            "model_path": "/tmp/pysar_frontend/models/x/best_model.pkl",
+            "encode_config": {"dataset": {"dataset": "/tmp/secret.csv"}},
+            "best_config": {"strategy": "aai", "aai_indices": ["ALTS910101"]},
+            "notify_webhook": "https://example.com/hook",
+        })
+        token = client.post(f"/api/jobs/{completed_job}/share").json()["share_token"]
+        body = client.get(f"/api/share/{token}").json()
+        for leaked in ("file_path", "model_path", "encode_config", "best_config",
+                       "session_id", "ip", "notify_webhook", "webhook_fired"):
+            assert leaked not in body, f"{leaked} leaked in shared payload"
+        # Results are still present — redaction shouldn't strip the shareable content.
+        assert "results" in body
+
     def test_mint_is_idempotent(self, client, completed_job):
         t1 = client.post(f"/api/jobs/{completed_job}/share").json()["share_token"]
         t2 = client.post(f"/api/jobs/{completed_job}/share").json()["share_token"]
@@ -54,3 +71,28 @@ class TestWebhookSSRFGuard:
         payload = make_encode_payload(uploaded_file_id)
         payload["notify_webhook"] = "ftp://evil/x"
         assert client.post("/api/encode", json=payload).status_code == 422
+
+    def test_fire_webhook_disables_redirects(self, monkeypatch):
+        """The POST must set allow_redirects=False so a public URL can't 302 past the
+        SSRF guard to an internal host (e.g. cloud metadata)."""
+        import threading
+        import backend.main as m
+
+        captured = {}
+        done = threading.Event()
+
+        def _fake_post(url, **kwargs):
+            captured["kwargs"] = kwargs
+            done.set()
+            class _Resp:
+                status_code = 200
+            return _Resp()
+
+        monkeypatch.setattr("requests.post", _fake_post)
+        job = {
+            "job_id": "abcd1234", "notify_webhook": "https://8.8.8.8/hook",
+            "status": "completed", "results": [], "webhook_fired": False,
+        }
+        m._fire_webhook(job)
+        assert done.wait(timeout=5), "webhook POST was never sent"
+        assert captured["kwargs"].get("allow_redirects") is False

@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Security
+- **Deploy: `TRUST_PROXY=true` added to `cloudbuild.yaml`** — the Cloud Build → Cloud Run path now sets it alongside `CORS_ORIGIN`, matching the GitHub Actions workflow. Without it, `_get_client_ip` fell back to Cloud Run's internal front-end IP, collapsing the per-IP rate limit and concurrent-job cap into a single global limit shared by all users.
+- **Webhook SSRF: redirects disabled** — the completion webhook POST (`_fire_webhook`) is now sent with `allow_redirects=False`, so a public URL that passes `_webhook_target_is_safe` can't `302`-redirect past the guard to a private/internal host (e.g. cloud metadata).
+- **Share-link path redaction** — `GET /api/share/{token}` now also strips server-side filesystem paths (`file_path`, `model_path`, `encode_config`, `best_config`) in addition to the owner identifiers, so a public link never exposes the on-disk upload/model layout.
+
+### Fixed
+- **Classification prediction** — `POST /api/jobs/{job_id}/predict` now works for classification jobs (previously a silent 404). The classification grid persists its winning estimator (`{model, scaler, label_encoder}`) and `best_config`, and predictions are decoded back to the original class labels via the saved `LabelEncoder` — for both the pySAR and PLM-embedding paths (the embedding-classification path previously returned raw integer codes).
+- **Health-check log noise** — `GET /api/health` now logs at `DEBUG` instead of `INFO`, so platform liveness probes and the frontend cold-start poller no longer flood Cloud Logging.
+
+### Added
+- **Structured job error codes** — failed jobs now carry a stable machine-readable `error_code` (`oom`, `timeout`, `segfault`, `subprocess_terminated`, `encoding_error`, `internal`) alongside the free-text `error`, surfaced via `_JobError` and included in the completion-webhook payload. The frontend `jobErrorMessage()` helper maps codes to actionable hints (used in `Layout`, `Step3Encode`, `JobsPanel`) instead of pattern-matching messages.
+- **Spreadsheet formula-injection guard** — `frontend/src/utils/csvSafe.js` (`csvSafeCell`) prefixes any string cell beginning with `= + - @` (or tab/CR) with a single quote before CSV/XLSX export (`Step4Results`, `JobsPanel`), neutralising formula injection when a user-supplied filename or label is opened in Excel/Sheets. Numeric cells (including negatives) pass through untouched.
+
+### Changed
+- **`/api/version` single source** — the backend version is now a single `BACKEND_VERSION` constant used by both the OpenAPI schema and `GET /api/version` (was a hardcoded `"2.5.1"` diverging from the app version).
+
+### Tests
+- **`tests/backend/test_api_model.py`** — classification best-model export (`_persist_classification_best_model`) and label-decoding prediction.
+- **`tests/backend/test_api_share.py`** — shared-payload path redaction and the webhook `allow_redirects=False` behaviour.
+- **`tests/backend/test_helpers.py`** — `_JobError` code carrying and `_subprocess_exit_code` signal mapping.
+- **`frontend/src/__tests__/unit/csvSafe.test.js`** — `csvSafeCell` sanitisation and numeric pass-through.
+- **`frontend/src/__tests__/unit/errorHandling.test.js`** — `jobErrorMessage` code→hint mapping and fallbacks.
+
+---
+
 ## [2.5.6] — 2026-07-05
 
 ### Added

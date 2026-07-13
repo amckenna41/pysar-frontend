@@ -16,6 +16,7 @@ import {
 import toast from 'react-hot-toast'
 import { useAppStore } from '../store/appStore'
 import { getJob } from '../utils/api'
+import { jobErrorMessage } from '../utils/errorHandling'
 import HowToModal from './HowToModal'
 
 const NAV_STEPS = [
@@ -110,10 +111,11 @@ export default function Layout({ children }) {
           }
           if (data.status === 'failed' && prevJobStatus.current !== 'failed') {
             prevJobStatus.current = 'failed'
-            toast.error(`Encoding failed: ${data.error ?? 'Unknown error'}`)
+            toast.error(`Encoding failed: ${jobErrorMessage(data)}`)
             updateJobHistoryStatus(job.job_id, {
               status: 'failed',
               error: data.error,
+              error_code: data.error_code,
               completed_at: new Date().toISOString(),
             })
             return  // terminal state — stop polling

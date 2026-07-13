@@ -106,3 +106,77 @@ class TestPredictSequenceValidator:
         from backend.main import PredictRequest
         with _pytest.raises(ValidationError):
             PredictRequest(sequences=["ACDEF123"])
+
+
+# ── Classification best-model export + label-decoding predict (bugs #4/#5) ────────
+
+def _fit_classifier():
+    """Return (model, scaler, label_encoder) trained on tiny 4-feature data with
+    string class labels 'lo'/'hi'."""
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import LabelEncoder, StandardScaler
+
+    rng = np.random.RandomState(0)
+    X = rng.rand(24, 4)
+    y_raw = np.array(["lo", "hi"] * 12)
+    le = LabelEncoder()
+    y = le.fit_transform(y_raw)
+    scaler = StandardScaler()
+    Xs = scaler.fit_transform(X)
+    from sklearn.linear_model import LogisticRegression as _LR
+    model = _LR(max_iter=500).fit(Xs, y)
+    return model, scaler, le
+
+
+class TestClassificationExport:
+    def test_persist_sets_best_config_and_pickles_label_encoder(self):
+        import types
+        import pickle
+        model, scaler, le = _fit_classifier()
+        job_id = "11111111-1111-4111-8111-111111111111"
+        job = {"job_id": job_id}
+        extras = {
+            "confusion_matrix": [[1, 0], [0, 1]], "classes": ["hi", "lo"],
+            "y_test": [0, 1], "y_pred": [0, 1],
+            "id_fields": {"Descriptor": "amino_acid_composition+gravy"},
+            "_model": model, "_scaler": scaler, "_label_encoder": le,
+        }
+        req = types.SimpleNamespace(strategy="descriptor")
+        m._persist_classification_best_model(job_id, req, job, extras)
+
+        assert job["model_available"] is True
+        assert job["best_config"]["strategy"] == "descriptor"
+        assert job["best_config"]["descriptors"] == ["amino_acid_composition", "gravy"]
+        # Internal artifacts are stripped from extras so the job stays JSON-serialisable.
+        for k in ("_model", "_scaler", "_label_encoder", "id_fields"):
+            assert k not in extras
+        # The pickle carries the label encoder needed to decode predictions.
+        pkl = _MODELS_DIR / job_id / "best_model.pkl"
+        assert pkl.exists()
+        with open(pkl, "rb") as fh:
+            payload = pickle.load(fh)
+        assert set(payload) == {"model", "scaler", "label_encoder"}
+
+
+class TestClassificationPredictDecoding:
+    def test_predict_returns_original_class_labels(self, monkeypatch):
+        import pickle
+        model, scaler, le = _fit_classifier()
+        job_id = "22222222-2222-4222-8222-222222222222"
+        d = _MODELS_DIR / job_id
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / "best_model.pkl", "wb") as fh:
+            pickle.dump({"model": model, "scaler": scaler, "label_encoder": le}, fh)
+
+        # Embedding strategy path: bypass pySAR by stubbing the embedder to return
+        # a fixed 4-feature matrix for the two input sequences.
+        import backend.embeddings as _emb
+        monkeypatch.setattr(_emb, "embed_sequences",
+                            lambda seqs, model_name=None: np.random.RandomState(1).rand(len(seqs), 4))
+
+        best_config = {"strategy": "embedding", "embedding_model": "stub"}
+        preds = m._predict_sequences(d / "best_model.pkl", best_config,
+                                     {"job_id": job_id}, ["ACDEF", "GHIKL"])
+        assert len(preds) == 2
+        # Decoded back to the original string labels — never raw integer codes.
+        assert all(p in ("lo", "hi") for p in preds)

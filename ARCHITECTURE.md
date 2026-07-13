@@ -273,8 +273,19 @@ Four built-in datasets (thermostability, absorption, enantioselectivity, localiz
 | `GET` | `/api/jobs/{job_id}` | Job status, progress, log, and results |
 | `POST` | `/api/jobs/{job_id}/cancel` | Cancel a running job |
 | `DELETE` | `/api/jobs/{job_id}` | Remove a completed job from the registry |
+| `GET` | `/api/jobs/{job_id}/model` | Download the exported best model (`.pkl`) |
+| `POST` | `/api/jobs/{job_id}/predict` | Score new sequences with the best model (regression → numeric, classification → decoded class labels) |
+| `POST` | `/api/jobs/{job_id}/share` | Mint a read-only share token |
+| `GET` | `/api/share/{token}` | Read a shared job's results (no session required) |
+| `GET` | `/api/embeddings/status` | PLM-embedding strategy availability |
 
 Interactive docs are available at `/api/docs` (Swagger UI).
+
+**Best-model export & prediction** work for both regression and classification jobs — the classification grid persists its winning estimator (`{model, scaler, label_encoder}`) so `/predict` decodes integer predictions back to the original class labels.
+
+**Share-link privacy** — `/api/share/{token}` strips the owner's identifiers (`session_id`, `ip`, `notify_webhook`, `webhook_fired`) **and** all server-side filesystem paths (`file_path`, `model_path`, `encode_config`, `best_config`) so a public link never exposes the on-disk layout.
+
+**Completion webhook SSRF** — targets are validated against private/loopback/link-local ranges before firing, and the POST is sent with `allow_redirects=False` so a public URL can't `302`-redirect past the guard to an internal host (e.g. cloud metadata).
 
 ### Job lifecycle
 
@@ -282,7 +293,7 @@ Encoding is computationally intensive and can take minutes. The backend uses a f
 
 1. `POST /api/encode` validates the request, assigns a UUID `job_id`, stores a pending job record in the `JOBS` dict, starts a **background daemon thread**, and returns `{"job_id": "..."}` immediately.
 2. The background thread calls `pySAR.Encoding()`, computes all model combinations, and writes progress and partial results back to the `JOBS` dict at each milestone.
-3. The frontend polls `GET /api/jobs/{job_id}` every 2 seconds; the response includes `status`, `progress` (0–100), `log` lines, and `partial_results` (top-10 rows as they become available).
+3. The frontend polls `GET /api/jobs/{job_id}` every 2 seconds; the response includes `status`, `progress` (0–100), `log` lines, and `partial_results` (top-10 rows as they become available). A failed job additionally carries `error` (human message) and `error_code` — a stable machine-readable token (`oom`, `timeout`, `segfault`, `subprocess_terminated`, `encoding_error`, `internal`) the UI branches on to show an actionable hint instead of pattern-matching the message.
 4. On completion the full results DataFrame is stored in `JOBS[job_id]["results"]`. On cancellation, the cancel event is set and the subprocess is sent `SIGTERM`.
 
 A single worker process is used (`--workers 1`) because the job registry is in-memory. Multiple instances would fragment the job state across containers — hence `--max-instances=1` on Cloud Run.
@@ -296,7 +307,7 @@ A custom sliding-window rate limiter (no external dependency) runs as ASGI middl
 | `POST /api/encode` | 5 requests / 60 s per IP |
 | `POST /api/upload` | 20 requests / 60 s per IP |
 
-The real client IP is derived from `X-Forwarded-For` by reading the entry `TRUST_PROXY_HOPS` positions from the **right** — the rightmost entries are appended by trusted infrastructure and can't be forged, while anything to their left is client-controlled. Set `TRUST_PROXY_HOPS` to the number of trusted proxies in front of the app (Cloud Run / GCLB = 1). The legacy `TRUST_PROXY=true` is still honoured and maps to one hop. When unset (0), the socket peer is used and `X-Forwarded-For` is ignored entirely, so a client can't rotate its apparent IP to bypass the per-IP rate limit or concurrent-job cap.
+The real client IP is derived from `X-Forwarded-For` by reading the entry `TRUST_PROXY_HOPS` positions from the **right** — the rightmost entries are appended by trusted infrastructure and can't be forged, while anything to their left is client-controlled. Set `TRUST_PROXY_HOPS` to the number of trusted proxies in front of the app (Cloud Run / GCLB = 1). The legacy `TRUST_PROXY=true` is still honoured and maps to one hop. When unset (0), the socket peer is used and `X-Forwarded-For` is ignored entirely, so a client can't rotate its apparent IP to bypass the per-IP rate limit or concurrent-job cap. **Both deploy paths set `TRUST_PROXY=true`** (`cloudbuild.yaml` and `.github/workflows/deploy_cloud_run.yml`); without it, every request would bucket under Cloud Run's internal front-end IP and the per-IP limits would collapse into a single global limit.
 
 ### CORS
 

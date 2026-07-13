@@ -22,6 +22,7 @@ import { useAppStore } from '../store/appStore'
 import ResultsCharts, { PredictedActualChart } from '../components/ResultsCharts'
 import ModelInsights from '../components/ModelInsights'
 import { createShareLink } from '../utils/api'
+import { csvSafeCell } from '../utils/csvSafe'
 import toast from 'react-hot-toast'
 
 const METRIC_COLS = ['R2', 'RMSE', 'MSE', 'MAE', 'RPD', 'Explained_Var']
@@ -216,7 +217,7 @@ export default function Step4Results() {
     if (!results?.length || !resultColumns?.length) return
     const header = resultColumns.join(',')
     const csvRows = results.map((r) =>
-      resultColumns.map((c) => JSON.stringify(r[c] ?? '')).join(',')
+      resultColumns.map((c) => JSON.stringify(csvSafeCell(r[c] ?? ''))).join(',')
     )
     downloadBlob([header, ...csvRows].join('\n'), 'text/csv', 'pysar_results.csv')
   }
@@ -225,7 +226,11 @@ export default function Step4Results() {
     if (!results?.length || !resultColumns?.length) return
     // Lazy-import xlsx so it is not included in the initial bundle
     const XLSX = await import('xlsx')
-    const ws = XLSX.utils.json_to_sheet(results, { header: resultColumns })
+    // Sanitize string cells so a formula-like value (=, +, -, @) isn't evaluated on open.
+    const safeRows = results.map((r) =>
+      Object.fromEntries(Object.entries(r).map(([k, v]) => [k, csvSafeCell(v)]))
+    )
+    const ws = XLSX.utils.json_to_sheet(safeRows, { header: resultColumns })
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'pySAR Results')
     XLSX.writeFile(wb, 'pysar_results.xlsx')

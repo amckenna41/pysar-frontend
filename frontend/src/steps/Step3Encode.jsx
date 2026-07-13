@@ -21,7 +21,7 @@ import {
 import toast from 'react-hot-toast'
 import { useAppStore } from '../store/appStore'
 import { startEncoding, getJob, getAaiIndicesFull, cancelJob, getDescriptors, uploadDataset, checkBackend } from '../utils/api'
-import { toastApiError } from '../utils/errorHandling'
+import { toastApiError, jobErrorMessage } from '../utils/errorHandling'
 import EncodeAdvancedOptions from '../components/EncodeAdvancedOptions'
 
 // ── Descriptor names loaded from backend (pySAR v2.5.6) ──────────────────────
@@ -315,8 +315,8 @@ export default function Step3Encode() {
         }
         if (data.status === 'failed') {
           // Persist error message, log, timestamp and duration
-          updateJobHistoryStatus(job.job_id, { status: 'failed', error: data.error, log: data.log, completed_at: new Date().toISOString(), duration_ms: startTs ? Date.now() - startTs : null })
-          toast.error(`Job failed: ${data.error}`)
+          updateJobHistoryStatus(job.job_id, { status: 'failed', error: data.error, error_code: data.error_code, log: data.log, completed_at: new Date().toISOString(), duration_ms: startTs ? Date.now() - startTs : null })
+          toast.error(`Job failed: ${jobErrorMessage(data)}`)
           // Still advance the queue on failure
           const { encodingQueue: q, shiftQueue: sq } = useAppStore.getState()
           if (q.length > 0) { const next = q[0]; sq(); setTimeout(() => _submitPayload(next), 300) }
@@ -1169,8 +1169,8 @@ export default function Step3Encode() {
             </div>
           )}
 
-          {isFailed && job.error && (
-            <p className="text-xs text-red-500 dark:text-red-400">{job.error}</p>
+          {isFailed && (job.error || job.error_code) && (
+            <p className="text-xs text-red-500 dark:text-red-400">{jobErrorMessage(job)}</p>
           )}
         </div>
       )}

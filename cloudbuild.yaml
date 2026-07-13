@@ -64,7 +64,10 @@ steps:
       - --timeout=3600                # allow long encoding jobs (max 1 hour)
       - --startup-cpu-boost            # extra CPU during cold start to load numpy/scipy faster
       - --cpu-throttling=false        # keep CPU allocated between requests for background encoding threads
-      - --set-env-vars=CORS_ORIGIN=$_CORS_ORIGIN
+      # TRUST_PROXY=true → _get_client_ip reads the real client IP from X-Forwarded-For.
+      # Without it, every request buckets under Cloud Run's internal front-end IP and the
+      # per-IP rate limit / concurrent-job cap collapse into a single global limit.
+      - --set-env-vars=CORS_ORIGIN=$_CORS_ORIGIN,TRUST_PROXY=true
 
   # Fetch the deployed Cloud Run URL, sync it to Vercel as VITE_API_URL,
   # then trigger a Vercel production redeploy so the new URL is baked in.

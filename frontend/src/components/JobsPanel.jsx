@@ -25,6 +25,8 @@ import {
 } from 'recharts'
 import toast from 'react-hot-toast'
 import { useAppStore } from '../store/appStore'
+import { jobErrorMessage } from '../utils/errorHandling'
+import { csvSafeCell } from '../utils/csvSafe'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const PAGE_SIZE = 20
@@ -112,7 +114,7 @@ function exportJSON(jobs) {
 function exportCSV(jobs) {
   const cols = ['job_id', 'submitted_at', 'status', 'strategy', 'algorithm', 'best_r2', 'duration_ms', 'dataset_filename']
   const header = cols.join(',')
-  const rows = jobs.map((j) => cols.map((c) => JSON.stringify(j[c] ?? '')).join(','))
+  const rows = jobs.map((j) => cols.map((c) => JSON.stringify(csvSafeCell(j[c] ?? ''))).join(','))
   const blob = new Blob([header + '\n' + rows.join('\n')], { type: 'text/csv' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -578,8 +580,8 @@ export default function JobsPanel() {
                 {entry.status === 'failed' && (entry.error || entry.log?.length > 0) && (
                   <div className="mt-3 space-y-2">
                     <p className="text-xs font-semibold text-red-500 uppercase tracking-wide">Failure details</p>
-                    {entry.error && (
-                      <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded px-3 py-2">{entry.error}</p>
+                    {(entry.error || entry.error_code) && (
+                      <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded px-3 py-2">{jobErrorMessage(entry)}</p>
                     )}
                     {entry.log?.length > 0 && (
                       <div className="rounded-lg bg-gray-900 text-green-400 font-mono text-xs p-3 max-h-48 overflow-y-auto space-y-0.5">

@@ -6,7 +6,7 @@
  * react-hot-toast mocked.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { formatApiError, toastApiError } from '../../utils/errorHandling'
+import { formatApiError, toastApiError, jobErrorMessage } from '../../utils/errorHandling'
 
 // Mock react-hot-toast at module level so Vitest's static hoisting is satisfied
 vi.mock('react-hot-toast', () => ({
@@ -80,6 +80,37 @@ describe('formatApiError', () => {
   it('prefers status-specific message over detail for 413', () => {
     const err = axiosError({ status: 413, data: { detail: 'ignored detail' } })
     expect(formatApiError(err)).toMatch(/too large/i)
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────────────
+// jobErrorMessage
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('jobErrorMessage', () => {
+  it('maps a known error_code to an actionable hint', () => {
+    expect(jobErrorMessage({ error_code: 'oom', error: 'Signal 9' })).toMatch(/memory/i)
+    expect(jobErrorMessage({ error_code: 'timeout', error: 'exceeded' })).toMatch(/time limit/i)
+  })
+
+  it('prefers the hint over the raw server error for known codes', () => {
+    const msg = jobErrorMessage({ error_code: 'oom', error: 'killed' })
+    expect(msg).not.toBe('killed')
+  })
+
+  it('falls back to the server error string when the code has no hint', () => {
+    expect(jobErrorMessage({ error_code: 'encoding_error', error: 'bad descriptor combo' }))
+      .toBe('bad descriptor combo')
+    expect(jobErrorMessage({ error_code: 'internal', error: 'boom' })).toBe('boom')
+  })
+
+  it('falls back to the error string when error_code is absent', () => {
+    expect(jobErrorMessage({ error: 'legacy message' })).toBe('legacy message')
+  })
+
+  it('returns a generic message for null / empty input', () => {
+    expect(jobErrorMessage(null)).toMatch(/unknown/i)
+    expect(jobErrorMessage({})).toMatch(/unknown/i)
   })
 })
 

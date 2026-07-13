@@ -94,7 +94,11 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="pySAR API", version="1.0.0", docs_url="/api/docs", lifespan=lifespan)
+# Single source of truth for the backend version — surfaced by /api/version and the
+# OpenAPI schema. Bump here on release (mirrors the CHANGELOG / git tag).
+BACKEND_VERSION = "2.5.6"
+
+app = FastAPI(title="pySAR API", version=BACKEND_VERSION, docs_url="/api/docs", lifespan=lifespan)
 
 # ── Detect Vercel deployment URL for CORS ────────────────────────────────────
 _VERCEL_URL = os.environ.get("VERCEL_URL")
@@ -412,6 +416,26 @@ _VALID_ALGORITHMS: frozenset = frozenset({
     "randomforest", "gradientboosting", "hgbr", "knn", "linearregression",
     "extratrees", "bagging", "adaboost", "gpr", "linear",
 })
+
+class _JobError(RuntimeError):
+    """A job failure carrying a stable machine-readable code alongside the human message.
+
+    The code lands in job['error_code'] so the frontend can branch on it (e.g. show a
+    "reduce dataset size" hint for 'oom') instead of pattern-matching the free-text message.
+    """
+    def __init__(self, message: str, code: str = "job_error") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _subprocess_exit_code(exitcode: Optional[int]) -> str:
+    """Map an abnormal subprocess exit code to a stable error_code token."""
+    if exitcode == -11:  # SIGSEGV
+        return "segfault"
+    if exitcode == -9:   # SIGKILL — typically OOM
+        return "oom"
+    return "subprocess_terminated"
+
 
 def _subprocess_exit_hint(exitcode: int) -> str:
     """Return a human-readable hint string for a subprocess that died abnormally.
@@ -973,7 +997,7 @@ def _classification_grid(
                "AUC": res["AUC"], "Precision": res["Precision"], "Recall": res["Recall"]}
         rows.append(row)
         if not best or (res["Accuracy"] or 0) > (best["res"]["Accuracy"] or 0):
-            best.update({"res": res})
+            best.update({"res": res, "id_fields": id_fields})
 
     def _desc_combos() -> List[tuple]:
         descs = selected_descriptors or []
@@ -1022,6 +1046,13 @@ def _classification_grid(
         "classes": r.get("classes"),
         "y_test": r.get("y_test"),
         "y_pred": r.get("y_pred"),
+        # Winning encoding id + fitted artifacts so the parent can persist a downloadable
+        # model and enable /predict for classification (parity with regression). These are
+        # stripped before the extras are stored on the (JSON-serialised) job dict.
+        "id_fields": best.get("id_fields"),
+        "_model": r.get("_model"),
+        "_scaler": r.get("_scaler"),
+        "_label_encoder": r.get("_label_encoder"),
     } if r else None
     return df, best_extras
 
@@ -1195,6 +1226,55 @@ def _capture_best_model_artifacts(encoding: Any, req: "EncodeRequest", model_dir
         logger.warning("[job:%s] CV capture failed: %s", job.get("job_id", "?")[:8], exc)
 
 
+def _persist_classification_best_model(job_id: str, req: "EncodeRequest",
+                                       job: Dict[str, Any], extras: Dict[str, Any]) -> None:
+    """Persist the classification grid's winning model + set best_config for /predict.
+
+    The regression path refits & exports via pySAR (Phase 6); classification already
+    fit its estimators in the grid, so we just pickle the best one here and record the
+    winning encoding so _predict_sequences can rebuild the identical feature space.
+
+    Mutates `extras` in place to drop the non-JSON-serialisable artifacts, since the
+    remaining dict is stored on the job (which is JSON-persisted / returned by the API).
+    """
+    import pickle as _pickle
+    model = extras.pop("_model", None)
+    scaler = extras.pop("_scaler", None)
+    label_encoder = extras.pop("_label_encoder", None)
+    id_fields = extras.pop("id_fields", None) or {}
+    if model is None:
+        return
+    model_dir = _MODELS_DIR / job_id
+    model_dir.mkdir(parents=True, exist_ok=True)
+    pkl = model_dir / "best_model.pkl"
+    with open(pkl, "wb") as fh:
+        _pickle.dump({"model": model, "scaler": scaler, "label_encoder": label_encoder}, fh)
+    job["model_available"] = True
+    job["model_path"] = str(pkl)
+
+    fi = _feature_importance_from_model(model)
+    if fi:
+        job["feature_importance"] = fi
+
+    # Winning encoding → best_config (same shape as the regression path).
+    if req.strategy == "aai":
+        best_id = str(id_fields.get("Index", ""))
+        job["best_config"] = {"strategy": "aai", "aai_indices": [best_id],
+                              "descriptors": None, "desc_combo": 1}
+        job["best_model_name"] = best_id
+    elif req.strategy == "descriptor":
+        _bd = str(id_fields.get("Descriptor", "")).split("+")
+        job["best_config"] = {"strategy": "descriptor", "aai_indices": None,
+                              "descriptors": _bd, "desc_combo": len(_bd)}
+        job["best_model_name"] = "+".join(_bd)
+    else:  # aai_descriptor
+        _ba = str(id_fields.get("Index", ""))
+        _bd = str(id_fields.get("Descriptor", "")).split("+")
+        job["best_config"] = {"strategy": "aai_descriptor", "aai_indices": [_ba],
+                              "descriptors": _bd, "desc_combo": len(_bd)}
+        job["best_model_name"] = f"{_ba}+{'+'.join(_bd)}"
+
+
 # ── Completion webhook (feature 10) ──────────────────────────────────────────────
 
 def _webhook_target_is_safe(url: str) -> bool:
@@ -1235,13 +1315,16 @@ def _fire_webhook(job: Dict[str, Any]) -> None:
             requests.post(url, json={
                 "job_id": job.get("job_id"),
                 "status": job.get("status"),
+                "error_code": job.get("error_code"),
                 "strategy": job.get("strategy"),
                 "algorithm": job.get("algorithm"),
                 "models_completed": job.get("models_completed"),
                 "best_model": job.get("best_model_name"),
                 "best_result": best,
                 "completed_at": job.get("completed_at"),
-            }, timeout=10)
+            }, timeout=10, allow_redirects=False)  # don't let a public URL 302 past the SSRF guard to an internal host
+            # ponytail: DNS-rebind window between _webhook_target_is_safe and here remains;
+            # pin the resolved IP only if this webhook ever becomes a real attack target.
             logger.info("[job:%s] Completion webhook sent", job.get("job_id", "?")[:8])
         except Exception as exc:  # noqa: BLE001
             logger.warning("[job:%s] Webhook POST failed: %s", job.get("job_id", "?")[:8], exc)
@@ -1515,9 +1598,10 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
                 if _enc_proc.is_alive():
                     _enc_proc.kill()
                 _CANCEL_PROCESSES.pop(job_id, None)
-                raise RuntimeError(
+                raise _JobError(
                     f"Job exceeded the maximum allowed duration of {_MAX_JOB_DURATION_SECS}s "
-                    "and was terminated. Try lowering max_models, desc_combo, or n_jobs."
+                    "and was terminated. Try lowering max_models, desc_combo, or n_jobs.",
+                    code="timeout",
                 )
             try:
                 _enc_result = _enc_queue.get(timeout=2)
@@ -1537,7 +1621,10 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
                         break
                     except _queue_mod.Empty:
                         _CANCEL_PROCESSES.pop(job_id, None)
-                        raise RuntimeError(_subprocess_exit_hint(_enc_proc.exitcode))
+                        raise _JobError(
+                            _subprocess_exit_hint(_enc_proc.exitcode),
+                            code=_subprocess_exit_code(_enc_proc.exitcode),
+                        )
 
         _enc_proc.join(timeout=5)
         _CANCEL_PROCESSES.pop(job_id, None)
@@ -1546,11 +1633,14 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
         _status_flag, *_payload = _enc_result
         if _status_flag == "error":
             # Re-raise the original error message from the subprocess
-            raise RuntimeError(f"Encoding failed: {_payload[0]}")
+            raise _JobError(f"Encoding failed: {_payload[0]}", code="encoding_error")
         results_df = _payload[0]
         # Classification path carries the best model's confusion matrix + labels (feature 4).
         _clf_extras = _payload[1] if (_status_flag == "ok_clf" and len(_payload) > 1) else None
         if _clf_extras:
+            # Persist the winning model + best_config (pops the fitted artifacts out of
+            # _clf_extras) so the download and /predict endpoints work for classification.
+            _persist_classification_best_model(job_id, req, job, _clf_extras)
             job["classification"] = _clf_extras
 
         enc_elapsed = time.monotonic() - t_enc
@@ -1670,6 +1760,9 @@ def _run_job(job_id: str, req: EncodeRequest, cancel_event: Optional[threading.E
         job["status"] = "failed"
         job["completed_at"] = datetime.now(timezone.utc).isoformat()
         job["error"] = str(exc)
+        # Stable machine-readable code for the UI (see _JobError); unclassified failures
+        # (bugs, unexpected library errors) fall back to 'internal'.
+        job["error_code"] = getattr(exc, "code", None) or "internal"
         _log(f"ERROR: {exc}")
         logger.error(
             "[job:%s] ── ENCODING PROCESS FAILED ────────────────────────────────────────\n"
@@ -1714,7 +1807,9 @@ def root():
 @app.get("/api/health")
 def health() -> Dict[str, str]:
     """Liveness check."""
-    logger.info("Health check requested")
+    # DEBUG, not INFO: platform liveness probes + the frontend's cold-start poller hit
+    # this constantly and would otherwise flood Cloud Logging.
+    logger.debug("Health check requested")
     return {"status": "ok"}
 
 
@@ -2722,6 +2817,7 @@ def start_encoding(req: EncodeRequest, request: Request, response: Response) -> 
             "webhook_fired": False,
             "share_token": None,        # set when the user creates a share link (feature 10)
             "error": None,
+            "error_code": None,         # stable machine-readable failure code (see _JobError)
             "strategy": req.strategy,
             "algorithm": req.algorithm,
             "ip": ip,                  # stored for concurrent job counting (abuse control)
@@ -2855,14 +2951,17 @@ def create_share_link(job_id: str, request: Request, response: Response) -> Dict
 def get_shared_job(token: str) -> Dict[str, Any]:
     """Return a read-only view of a shared job — no session required, results included.
 
-    Strips the owner's identifiers (session/ip/webhook) from the shared payload.
+    Strips the owner's identifiers (session/ip/webhook) and any server-side filesystem
+    paths from the shared payload — a public link shouldn't expose the upload/model
+    layout on disk.
     """
     job_id = _SHARE_TOKENS.get(token)
     job = JOBS.get(job_id) if job_id else None
     if job is None or job.get("share_token") != token:
         raise HTTPException(status_code=404, detail="Shared results not found.")
-    return {k: v for k, v in job.items()
-            if k not in {"session_id", "ip", "notify_webhook", "webhook_fired"}}
+    _redacted = {"session_id", "ip", "notify_webhook", "webhook_fired",
+                 "file_path", "model_path", "encode_config", "best_config"}
+    return {k: v for k, v in job.items() if k not in _redacted}
 
 
 @app.get("/api/jobs/{job_id}/model")
@@ -2940,7 +3039,7 @@ def predict_with_best_model(job_id: str, req: PredictRequest, request: Request, 
 
 
 def _predict_sequences(pkl: Path, best_config: Dict[str, Any], job: Dict[str, Any],
-                       sequences: List[str]) -> List[float]:
+                       sequences: List[str]) -> List[Any]:
     """Encode `sequences` in the job's winning feature space and run the pickled model."""
     import pickle as _pickle
     import numpy as _np
@@ -2950,6 +3049,15 @@ def _predict_sequences(pkl: Path, best_config: Dict[str, Any], job: Dict[str, An
         payload = _pickle.load(fh)
     model = payload.get("model") if isinstance(payload, dict) else payload
     scaler = payload.get("scaler") if isinstance(payload, dict) else None
+    # Present for classification jobs — maps the model's integer output back to the
+    # original class labels. Absent (None) for regression, where output stays numeric.
+    label_encoder = payload.get("label_encoder") if isinstance(payload, dict) else None
+
+    def _format(raw) -> List[Any]:
+        raw = _np.ravel(raw)
+        if label_encoder is not None:
+            return [str(c) for c in label_encoder.inverse_transform(raw.astype(int))]
+        return [round(float(v), 6) for v in raw]
 
     strategy = best_config["strategy"]
 
@@ -2958,7 +3066,7 @@ def _predict_sequences(pkl: Path, best_config: Dict[str, Any], job: Dict[str, An
         from backend.embeddings import embed_sequences, DEFAULT_MODEL
         X = embed_sequences(sequences, best_config.get("embedding_model") or DEFAULT_MODEL)
         X_values = X if scaler is None else scaler.transform(X)
-        return [round(float(v), 6) for v in _np.ravel(model.predict(X_values))]
+        return _format(model.predict(X_values))
 
     # Build a throwaway single-column dataset of the input sequences so pySAR's Encoding
     # computes features with the same config used at training time. Reuse the job's exact
@@ -3014,8 +3122,7 @@ def _predict_sequences(pkl: Path, best_config: Dict[str, Any], job: Dict[str, An
         ))
     if scaler is not None:
         X_values = scaler.transform(X_values)
-    preds = model.predict(X_values)
-    return [round(float(v), 6) for v in _np.ravel(preds)]
+    return _format(model.predict(X_values))
 
 
 @app.get("/api/version")
@@ -3033,7 +3140,7 @@ def get_version() -> Dict[str, str]:
         except Exception:  # noqa: BLE001
             pass
     return {
-        "backend_version": "2.5.1",
+        "backend_version": BACKEND_VERSION,
         "pysar_version": pysar_version,
         "python_version": _sys.version,
     }

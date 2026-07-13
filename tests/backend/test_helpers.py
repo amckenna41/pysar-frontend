@@ -27,6 +27,7 @@ import pytest
 from backend.main import (
     EncodeRequest,
     UPLOAD_DIR,
+    _JobError,
     _activity_histogram,
     _build_config,
     _check_missing,
@@ -37,6 +38,7 @@ from backend.main import (
     _length_histogram,
     _read_dataset,
     _sequence_length_stats,
+    _subprocess_exit_code,
     _validate_sequences,
 )
 
@@ -632,3 +634,23 @@ class TestEstimateTotalModels:
             max_models=100,
         )
         assert _estimate_total_models(req) == 100
+
+
+# ── Error taxonomy (_JobError / _subprocess_exit_code) ──────────────────────────
+
+class TestErrorTaxonomy:
+    def test_joberror_carries_code_and_message(self):
+        e = _JobError("boom", code="timeout")
+        assert str(e) == "boom"
+        assert e.code == "timeout"
+
+    def test_joberror_default_code(self):
+        assert _JobError("x").code == "job_error"
+
+    def test_subprocess_exit_code_maps_signals(self):
+        assert _subprocess_exit_code(-9) == "oom"        # SIGKILL / OOM
+        assert _subprocess_exit_code(-11) == "segfault"  # SIGSEGV
+
+    def test_subprocess_exit_code_other_and_none(self):
+        assert _subprocess_exit_code(-6) == "subprocess_terminated"
+        assert _subprocess_exit_code(None) == "subprocess_terminated"
