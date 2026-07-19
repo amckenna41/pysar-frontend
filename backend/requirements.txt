@@ -19,4 +19,4 @@ git+https://github.com/amckenna41/pySAR.git@68a256b5aa3cfefbffb80b6a582d9d050c33
 # Testing
 pytest>=8.0
 pytest-cov>=7.1.0
-httpx>=0.27.0
+httpx>=0.28.1
